@@ -2,6 +2,8 @@ import { sentryVitePlugin } from "@sentry/vite-plugin"
 import { defineConfig } from "vite"
 import desktopPlugin from "./vite"
 
+const buildDir = process.env.OPENCODE_BUILD_DIR
+
 const sentry =
   process.env.SENTRY_AUTH_TOKEN && process.env.SENTRY_ORG && process.env.SENTRY_PROJECT
     ? sentryVitePlugin({
@@ -21,12 +23,15 @@ const sentry =
 
 export default defineConfig({
   plugins: [desktopPlugin, sentry] as any,
+  cacheDir: buildDir ? `${buildDir}/web/vite-cache` : undefined,
   server: {
     host: "0.0.0.0",
     allowedHosts: true,
     port: 3000,
   },
   build: {
+    emptyOutDir: Boolean(buildDir),
+    outDir: buildDir ? `${buildDir}/web/dist` : undefined,
     target: "esnext",
     sourcemap: true,
   },
