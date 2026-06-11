@@ -1,4 +1,4 @@
-const childProcess = require("child_process")
+﻿const childProcess = require("child_process")
 const fs = require("fs")
 const http = require("http")
 const net = require("net")
@@ -7,6 +7,43 @@ const vscode = require("vscode")
 
 const output = vscode.window.createOutputChannel("opencode App")
 const processes = new Map()
+let settingsPanel = undefined
+
+function openSettingsPanel(provider) {
+  if (settingsPanel) {
+    settingsPanel.reveal()
+    return
+  }
+
+  const panel = vscode.window.createWebviewPanel(
+    "opencodeSettings",
+    "OpenCode Settings",
+    vscode.ViewColumn.One,
+    {
+      enableScripts: true,
+      retainContextWhenHidden: true,
+    },
+  )
+
+  const url = provider.webUrl()
+  const origin = new URL(url).origin
+  panel.webview.html = `
+<!doctype html>
+<html><head>
+<meta charset="UTF-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; frame-src ${origin}; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<style>html,body,iframe{width:100%;height:100%;margin:0;padding:0;overflow:hidden;background:var(--vscode-editor-background)}iframe{width:100%;height:100%;border:0}</style>
+</head><body>
+<iframe src="${origin}/settings"></iframe>
+</body></html>
+`
+
+  panel.onDidDispose(() => {
+    settingsPanel = undefined
+  })
+
+  settingsPanel = panel
+}
 
 function activate(context) {
   const provider = new OpenCodeAppViewProvider(context)
@@ -34,7 +71,7 @@ function activate(context) {
   )
   context.subscriptions.push(
     vscode.commands.registerCommand("opencodeVscodeApp.openSettings", () => {
-      vscode.commands.executeCommand("workbench.action.openSettings", "opencodeVscodeApp")
+      openSettingsPanel(provider)
     }),
   )
 }
@@ -98,7 +135,11 @@ class OpenCodeAppViewProvider {
   webUrl(options = {}) {
     const url = new URL(`http://localhost:${this.ports().web}`)
     const workspaceDir = workspaceDirFromVSCode()
-    if (workspaceDir) url.searchParams.set("opencode_workspace", workspaceDir)
+    if (workspaceDir) {
+      const encoded = Buffer.from(workspaceDir, "utf-8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+      url.pathname = "/" + encoded + "/session"
+      url.searchParams.set("opencode_workspace", workspaceDir)
+    }
     if (options.bridge) url.searchParams.set("opencode_vscode", "1")
     if (options.cacheBust) url.searchParams.set("t", String(options.cacheBust))
     return url.toString()
