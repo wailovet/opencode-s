@@ -42,8 +42,32 @@
       {
         "command": "opencodeVscodeApp.openInBrowser",
         "title": "opencode App: Open in Browser"
+      },
+      {
+        "command": "opencodeVscodeApp.reload",
+        "title": "Reload App",
+        "icon": "$(refresh)"
+      },
+      {
+        "command": "opencodeVscodeApp.openSettings",
+        "title": "opencode App Settings",
+        "icon": "$(gear)"
       }
     ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "opencodeVscodeApp.reload",
+          "when": "view == opencodeVscodeApp.view",
+          "group": "navigation"
+        },
+        {
+          "command": "opencodeVscodeApp.openSettings",
+          "when": "view == opencodeVscodeApp.view",
+          "group": "navigation"
+        }
+      ]
+    },
     "viewsContainers": {
       "activitybar": [
         {

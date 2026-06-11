@@ -27,6 +27,16 @@ function activate(context) {
       await vscode.env.openExternal(vscode.Uri.parse(provider.webUrl()))
     }),
   )
+  context.subscriptions.push(
+    vscode.commands.registerCommand("opencodeVscodeApp.reload", () => {
+      provider.reload()
+    }),
+  )
+  context.subscriptions.push(
+    vscode.commands.registerCommand("opencodeVscodeApp.openSettings", () => {
+      vscode.commands.executeCommand("workbench.action.openSettings", "opencodeVscodeApp")
+    }),
+  )
 }
 
 function deactivate() {
@@ -60,6 +70,11 @@ class OpenCodeAppViewProvider {
       }
     })
     return this.refresh()
+  }
+
+  reload() {
+    if (!this.view) return
+    this.view.webview.html = this.html()
   }
 
   async refresh() {
@@ -126,54 +141,21 @@ class OpenCodeAppViewProvider {
         overflow: hidden;
         background: var(--vscode-editor-background);
       }
-      .toolbar {
-        box-sizing: border-box;
-        display: flex;
-        gap: 6px;
-        height: 34px;
-        align-items: center;
-        padding: 4px;
-        border-bottom: 1px solid var(--vscode-sideBarSectionHeader-border);
-      }
-      button {
-        color: var(--vscode-button-foreground);
-        background: var(--vscode-button-background);
-        border: 0;
-        padding: 4px 8px;
-        cursor: pointer;
-      }
       iframe {
-        height: calc(100% - 34px);
+        width: 100%;
+        height: 100%;
         border: 0;
       }
     </style>
   </head>
   <body>
-    <div class="toolbar">
-      <button id="reload">Reload</button>
-      <button id="restart">Restart</button>
-      <button id="browser">Browser</button>
-      <button id="logs">Logs</button>
-    </div>
     <iframe id="app" src="${appUrl}"></iframe>
     <script nonce="${nonce}">
-      const vscode = acquireVsCodeApi()
-      const app = document.getElementById("app")
-      document.getElementById("reload").addEventListener("click", () => {
-        app.src = "${this.webUrl({ bridge: true })}" + "&t=" + Date.now()
-      })
-      document.getElementById("restart").addEventListener("click", () => vscode.postMessage({ command: "restart" }))
-      document.getElementById("browser").addEventListener("click", () => vscode.postMessage({ command: "openInBrowser" }))
-      document.getElementById("logs").addEventListener("click", () => vscode.postMessage({ command: "showLogs" }))
       window.addEventListener("message", (event) => {
         const message = event.data
         if (!message || message.source !== "opencode-vscode-app") return
-        if (message.command === "pickDirectory") {
-          vscode.postMessage(message)
-          return
-        }
         if (message.command === "directoryPicked") {
-          app.contentWindow?.postMessage(message, "${new URL(appUrl).origin}")
+          document.getElementById("app").contentWindow?.postMessage(message, "${new URL(appUrl).origin}")
         }
       })
     </script>
