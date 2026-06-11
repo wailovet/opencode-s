@@ -1,4 +1,3 @@
-import "../../vscode-app/src/vscode-patch.css"
 import { DialogSettings } from "@/components/settings-v2"
 import { Dialog as Kobalte } from "@kobalte/core/dialog"
 import { Route, useLocation } from "@solidjs/router"
