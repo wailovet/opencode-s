@@ -1,0 +1,69 @@
+{
+  "name": "opencode-vscode-app",
+  "displayName": "opencode App",
+  "description": "opencode visual app inside VS Code",
+  "version": "0.0.1",
+  "publisher": "opencode-dev",
+  "private": true,
+  "type": "commonjs",
+  "engines": {
+    "vscode": "^1.94.0"
+  },
+  "categories": [
+    "Other"
+  ],
+  "main": "./src/extension.js",
+  "contributes": {
+    "configuration": {
+      "title": "opencode App",
+      "properties": {
+        "opencodeVscodeApp.bunPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to bun.exe. Leave empty to use BUN_EXE, PATH, or D:\\bun.exe on Windows."
+        },
+        "opencodeVscodeApp.backendPort": {
+          "type": "number",
+          "default": 4096,
+          "description": "Local opencode backend port used by the VS Code app webview."
+        },
+        "opencodeVscodeApp.webPort": {
+          "type": "number",
+          "default": 4444,
+          "description": "Local Vite app port loaded inside the VS Code app webview."
+        }
+      }
+    },
+    "commands": [
+      {
+        "command": "opencodeVscodeApp.restart",
+        "title": "opencode App: Restart Dev Servers"
+      },
+      {
+        "command": "opencodeVscodeApp.openInBrowser",
+        "title": "opencode App: Open in Browser"
+      }
+    ],
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "opencodeVscodeApp",
+          "title": "opencode",
+          "icon": "media/icon.svg"
+        }
+      ]
+    },
+    "views": {
+      "opencodeVscodeApp": [
+        {
+          "id": "opencodeVscodeApp.view",
+          "name": "App",
+          "type": "webview"
+        }
+      ]
+    }
+  },
+  "scripts": {
+    "check": "node --check src/extension.js"
+  }
+}
