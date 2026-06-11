@@ -33,6 +33,7 @@ import { FileProvider } from "@/context/file"
 import { ServerSDKProvider } from "@/context/server-sdk"
 import { ServerSyncProvider } from "@/context/server-sync"
 import { GlobalProvider } from "@/context/global"
+import { PatchedRouteGate, PatchedRoutes } from "@/vscode-patch"
 import { HighlightsProvider } from "@/context/highlights"
 import { LanguageProvider, type Locale, useLanguage } from "@/context/language"
 import { LayoutProvider } from "@/context/layout"
@@ -181,7 +182,9 @@ function AppShellProviders(props: ParentProps) {
             <ModelsProvider>
               <CommandProvider>
                 <HighlightsProvider>
-                  <Layout>{props.children}</Layout>
+                  <PatchedRouteGate>
+                    <Layout>{props.children}</Layout>
+                  </PatchedRouteGate>
                 </HighlightsProvider>
               </CommandProvider>
             </ModelsProvider>
@@ -409,6 +412,7 @@ export function AppInterface(props: {
               </TabsProvider>
             )}
           >
+            <PatchedRoutes />
             <Route path="/" component={HomeRoute} />
             <Route path="/new-session" component={DraftRoute} />
             <Route path="/:dir" component={DirectoryLayout}>
