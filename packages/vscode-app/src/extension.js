@@ -137,10 +137,8 @@ class OpenCodeAppViewProvider {
     const workspaceDir = workspaceDirFromVSCode()
     if (workspaceDir) {
       const encoded = Buffer.from(workspaceDir, "utf-8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
-      url.pathname = "/" + encoded + "/session"
-      url.searchParams.set("opencode_workspace", workspaceDir)
+      url.pathname = "/" + encoded + "/vscode-session"
     }
-    if (options.bridge) url.searchParams.set("opencode_vscode", "1")
     if (options.cacheBust) url.searchParams.set("t", String(options.cacheBust))
     return url.toString()
   }
