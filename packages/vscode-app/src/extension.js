@@ -134,7 +134,7 @@ class OpenCodeAppViewProvider {
 
   webUrl(options = {}) {
     const url = new URL(`http://localhost:${this.ports().web}`)
-    const workspaceDir = workspaceDirFromVSCode()
+    const workspaceDir = normalizeWorkspaceDir(workspaceDirFromVSCode())
     if (workspaceDir) {
       const encoded = Buffer.from(workspaceDir, "utf-8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
       url.pathname = "/" + encoded + "/vscode-session"
@@ -156,7 +156,7 @@ class OpenCodeAppViewProvider {
       source: "opencode-vscode-app",
       command: "directoryPicked",
       requestId: message.requestId,
-      result: uris ? uris.map((uri) => uri.fsPath) : null,
+      result: uris ? uris.map((uri) => normalizeWorkspaceDir(uri.fsPath)) : null,
     })
   }
 
@@ -336,6 +336,11 @@ function resolveWorkspaceDir(fallback) {
 
 function workspaceDirFromVSCode() {
   return vscode.workspace.workspaceFolders?.[0]?.uri?.fsPath
+}
+
+function normalizeWorkspaceDir(directory) {
+  if (!directory) return directory
+  return directory.replace(/^[a-z]:/, (drive) => drive.toUpperCase())
 }
 
 function stopProcesses() {

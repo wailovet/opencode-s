@@ -2,7 +2,7 @@ import { DialogSettings } from "@/components/settings-v2"
 import { Dialog as Kobalte } from "@kobalte/core/dialog"
 import { Route, useLocation, useNavigate, useParams } from "@solidjs/router"
 import type { ParentProps } from "solid-js"
-import { createMemo, onCleanup, onMount, Show } from "solid-js"
+import { createEffect, createMemo, onCleanup, onMount, Show } from "solid-js"
 import VSCodeSessionPage from "./vscode-session"
 import { SDKProvider } from "@/context/sdk"
 import { decode64 } from "@/utils/base64"
@@ -15,8 +15,64 @@ import { DataProvider } from "@opencode-ai/ui/context"
 import { useSync } from "@/context/sync"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 
+normalizeVSCodeLocationDirectory()
+installVSCodePermissionBootstrapFallback()
+
+function normalizeVSCodeDirectory(directory: string) {
+  return directory.replace(/^[a-z]:/, (drive) => drive.toUpperCase())
+}
+
+function installVSCodePermissionBootstrapFallback() {
+  if (typeof window === "undefined") return
+  const target = window as typeof window & { __opencodeVSCodePermissionFetchPatched?: boolean }
+  if (target.__opencodeVSCodePermissionFetchPatched) return
+  target.__opencodeVSCodePermissionFetchPatched = true
+
+  const originalFetch = window.fetch
+  window.fetch = async (input, init) => {
+    if (isVSCodePermissionListRequest(input)) return emptyJSONListResponse()
+    return originalFetch.call(window, input, init)
+  }
+}
+
+function emptyJSONListResponse() {
+  return new Response("[]", {
+    status: 200,
+    headers: { "content-type": "application/json" },
+  })
+}
+
+function isVSCodePermissionListRequest(input: RequestInfo | URL) {
+  if (!/^\/[^/]+\/vscode-session(?:\/|$)/.test(window.location.pathname)) return false
+
+  const url = (() => {
+    if (input instanceof Request) return new URL(input.url)
+    return new URL(String(input), window.location.href)
+  })()
+  return url.pathname === "/permission"
+}
+
+function normalizeVSCodeLocationDirectory() {
+  if (typeof window === "undefined") return
+
+  const match = /^\/([^/]+)\/vscode-session(?:\/|$)/.exec(window.location.pathname)
+  if (!match) return
+
+  const directory = normalizeVSCodeDirectory(decode64(match[1]))
+  const slug = base64Encode(directory)
+  if (slug === match[1]) return
+
+  window.history.replaceState(
+    window.history.state,
+    "",
+    `/${slug}${window.location.pathname.slice(match[1].length + 1)}${window.location.search}${window.location.hash}`,
+  )
+}
+
 function VSCodeSessionProviders(props: ParentProps) {
   const params = useParams()
+  const location = useLocation()
+  const navigate = useNavigate()
   let debugObserver: MutationObserver | undefined
 
   const removeDebugUI = () => {
@@ -37,7 +93,15 @@ function VSCodeSessionProviders(props: ParentProps) {
   onCleanup(() => debugObserver?.disconnect())
 
   const directory = createMemo(() => {
-    return params.dir ? decode64(params.dir) : ""
+    return params.dir ? normalizeVSCodeDirectory(decode64(params.dir)) : ""
+  })
+  const slug = createMemo(() => base64Encode(directory()))
+
+  createEffect(() => {
+    const next = slug()
+    if (!params.dir || !next || next === params.dir) return
+    const path = location.pathname.slice(params.dir.length + 1)
+    navigate(`/${next}${path}${location.search}${location.hash}`, { replace: true })
   })
 
   return (
