@@ -3,16 +3,11 @@ setlocal
 
 set "ROOT=%~dp0"
 set "BUILD_DIR=%ROOT%build\vscode-app"
-set "EXTENSION_DIR=%ROOT%packages\vscode-app"
+set "STAGE_DIR=%ROOT%build\vscode-vsix\staging"
 
 where code >nul 2>&1
 if errorlevel 1 (
   echo [dev-vscode] VS Code command "code" was not found in PATH.
-  exit /b 1
-)
-
-if not exist "%EXTENSION_DIR%\package.json" (
-  echo [dev-vscode] VS Code extension folder was not found: "%EXTENSION_DIR%"
   exit /b 1
 )
 
@@ -33,14 +28,27 @@ if not exist "%BUILD_DIR%\user-data" mkdir "%BUILD_DIR%\user-data"
 if not exist "%BUILD_DIR%\extensions" mkdir "%BUILD_DIR%\extensions"
 
 cd /d "%ROOT%"
-echo [dev-vscode] Extension: "%EXTENSION_DIR%"
+
+echo [dev-vscode] Building staging directory (no VSIX, no opencode rebuild)...
+call "%ROOT%build-vscode-vsix.bat" --skip-vsix --skip-opencode
+if errorlevel 1 (
+  echo [dev-vscode] Build failed.
+  exit /b 1
+)
+
+if not exist "%STAGE_DIR%\src\extension.js" (
+  echo [dev-vscode] Staging directory not ready: "%STAGE_DIR%\src\extension.js"
+  exit /b 1
+)
+
+echo [dev-vscode] Extension: "%STAGE_DIR%"
 echo [dev-vscode] User data: "%BUILD_DIR%\user-data"
 code ^
   --new-window ^
   --user-data-dir "%BUILD_DIR%\user-data" ^
   --extensions-dir "%BUILD_DIR%\extensions" ^
-  --extensionDevelopmentPath="%EXTENSION_DIR%" ^
+  --extensionDevelopmentPath="%STAGE_DIR%" ^
   --log trace ^
-  "%EXTENSION_DIR%"
+  "%ROOT%"
 
 exit /b %errorlevel%

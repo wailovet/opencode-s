@@ -19,6 +19,9 @@ import { useSDK } from "@/context/sdk"
 import { useServerSDK } from "@/context/server-sdk"
 import { useSync } from "@/context/sync"
 import { VSCodePromptInput } from "@/vscode/vscode-prompt-input"
+import { createSessionComposerState } from "@/pages/session/composer/session-composer-state"
+import { SessionPermissionDock } from "@/pages/session/composer/session-permission-dock"
+import { SessionQuestionDock } from "@/pages/session/composer/session-question-dock"
 import { MessageTimeline } from "@/pages/session/message-timeline"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { useServer } from "@/context/server"
@@ -42,6 +45,7 @@ export default function VSCodeSessionPage() {
   const [searchParams, setSearchParams] = useSearchParams<{ prompt?: string }>()
   const location = useLocation()
   const { params, sessionKey } = useSessionLayout()
+  const composer = createSessionComposerState({ closeMs: 0 })
 
   // 来源: session.tsx:207-215 — 从URL参数读取初始prompt
   createEffect(() => {
@@ -264,10 +268,6 @@ export default function VSCodeSessionPage() {
   return (
     <div class="relative size-full overflow-hidden flex flex-col">
       {sessionSync() ?? ""}
-      {/* VSCode侧边栏简化头部 */}
-      <div class="flex items-center justify-between h-9 px-3 border-b border-border-weaker-base bg-background-stronger shrink-0">
-        <span class="text-13-regular text-text-strong truncate">OpenCode</span>
-      </div>
       <div class="flex-1 min-h-0 flex flex-col">
         {/* 来源: session.tsx:1770-1860 — 主内容区 */}
         <div class="flex-1 min-h-0 flex flex-col bg-background-stronger rounded-[10px] overflow-hidden shadow-[var(--v2-elevation-raised)]">
@@ -313,7 +313,28 @@ export default function VSCodeSessionPage() {
             </Switch>
           </div>
           {/* VSCode版 — 使用 VSCodePromptInput */}
-          <div class="shrink-0 px-3 pb-3">
+          <div class="shrink-0 px-3 pb-3 flex flex-col gap-2" data-component="session-prompt-dock">
+            <Show when={composer.questionRequest()} keyed>
+              {(request) => (
+                <div>
+                  <SessionQuestionDock request={request} onSubmit={resumeScroll} />
+                </div>
+              )}
+            </Show>
+            <Show when={composer.permissionRequest()} keyed>
+              {(request) => (
+                <div>
+                  <SessionPermissionDock
+                    request={request}
+                    responding={composer.permissionResponding()}
+                    onDecide={(response) => {
+                      resumeScroll()
+                      composer.decide(response)
+                    }}
+                  />
+                </div>
+              )}
+            </Show>
             <VSCodePromptInput onSubmit={() => resumeScroll()} />
           </div>
         </div>
