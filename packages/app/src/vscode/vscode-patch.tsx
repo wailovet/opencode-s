@@ -17,6 +17,7 @@ import { useSync } from "@/context/sync"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { isVSCodeAppPath } from "./vscode-route"
 
+console.log("[vscode-patch] module loaded, backendUrl=", (window).__opencodeVSCodeBackendUrl)
 const DEFAULT_SERVER_URL_KEY = "opencode.settings.dat:defaultServerUrl"
 const HTTP_PROXY_TIMEOUT_MS = 120_000
 type VSCodeWebviewApi = { postMessage(message: unknown): void }
@@ -43,7 +44,7 @@ function normalizeVSCodeDirectory(directory: string) {
 
 function markVSCodeSessionOpen() {
   if (typeof document === "undefined") return
-  if (!isVSCodeAppPath()) return
+  if (!vscodeApi()) return
   document.body.classList.add("vscode-session-open")
 }
 
@@ -73,15 +74,19 @@ function installVSCodeChromeStyle() {
 function installVSCodeBackendUrl() {
   if (typeof window === "undefined") return
   const backendUrl = (window as VSCodeWindow).__opencodeVSCodeBackendUrl
+  console.log("[installVSCodeBackendUrl] backendUrl=", backendUrl, "location.origin=", window.location.origin)
   if (!backendUrl) return
   try {
     localStorage.setItem(DEFAULT_SERVER_URL_KEY, backendUrl)
-  } catch {}
+    console.log("[installVSCodeBackendUrl] wrote to localStorage:", backendUrl)
+  } catch (e) {
+    console.log("[installVSCodeBackendUrl] localStorage.setItem failed:", e)
+  }
 }
 
 function installVSCodeHttpProxyBridge() {
   if (typeof window === "undefined") return
-  if (!isVSCodeAppPath()) return
+  if (!vscodeApi()) return
   const target = window as typeof window & { __opencodeVSCodeHttpProxyFetchPatched?: boolean }
   if (target.__opencodeVSCodeHttpProxyFetchPatched) return
   target.__opencodeVSCodeHttpProxyFetchPatched = true
@@ -96,7 +101,7 @@ function installVSCodeHttpProxyBridge() {
 }
 
 function isVSCodeBackendRequest(input: RequestInfo | URL) {
-  if (!isVSCodeAppPath()) return false
+  if (!vscodeApi()) return false
   const url = requestUrl(input)
   // 静态资源（vscode-webview:// 协议的 /assets/ 路径）不走代理，其余全走。
   // 后端是唯一的 API 来源，所有 API 请求都必须经 httpProxy 转发。
@@ -130,7 +135,7 @@ function isVSCodeBackendPath(pathname: string) {
 
 function installVSCodeAssetPathRewrite() {
   if (typeof window === "undefined") return
-  if (!isVSCodeAppPath()) return
+  if (!vscodeApi()) return
   const target = window as VSCodeWindow
   if (target.__opencodeVSCodeAssetPathPatched) return
   target.__opencodeVSCodeAssetPathPatched = true
@@ -371,7 +376,7 @@ async function vscodeSseProxyFetch(input: RequestInfo | URL, init?: RequestInit)
 
 function installVSCodeWebSocketProxyBridge() {
   if (typeof window === "undefined") return
-  if (!isVSCodeAppPath()) return
+  if (!vscodeApi()) return
   const target = window as typeof window & { __opencodeVSCodeWebSocketProxyPatched?: boolean }
   if (target.__opencodeVSCodeWebSocketProxyPatched) return
   target.__opencodeVSCodeWebSocketProxyPatched = true
@@ -570,7 +575,7 @@ function emptyJSONListResponse() {
 }
 
 function isVSCodePermissionListRequest(input: RequestInfo | URL) {
-  if (!isVSCodeAppPath()) return false
+  if (!vscodeApi()) return false
 
   const url = (() => {
     if (input instanceof Request) return new URL(input.url)
