@@ -20,7 +20,7 @@ import { VSCodeStorageBridge } from "./vscode-storage-bridge"
 
 console.log("[vscode-patch] init start")
 VSCodeHttpProxy.install()
-VSCodeStorageBridge.install()
+await VSCodeStorageBridge.install()
 normalizeVSCodeLocationDirectory()
 installVSCodeChromeStyle()
 markVSCodeSessionOpen()

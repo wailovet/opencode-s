@@ -91,6 +91,8 @@ class VSCodeStorageBridge {
   /** webview 请求全量数据 */
   handleGetAll(webview) {
     const entries = this.snapshot()
+    const hasUrl = !!entries["opencode.settings.dat:defaultServerUrl"]
+    console.log(`[storage] handleGetAll: ${Object.keys(entries).length} keys, hasServerUrl=${hasUrl} url=${entries["opencode.settings.dat:defaultServerUrl"] ?? "N/A"}`)
     webview.postMessage({
       source: "opencode-vscode-app",
       command: "storagePatch",

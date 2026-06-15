@@ -3,19 +3,15 @@ import { VSCodeHttpProxy } from "./vscode-http-proxy"
 /**
  * VSCodeStorageBridge —— 接管 localStorage，与 Extension Host 共享存储。
  *
- * 职责：
- *   1. 完全替换 Storage.prototype，所有 localStorage 读写走本桥接
- *   2. 数据同步到 Extension Host 的 globalState（跨 webview 共享 + 持久化）
- *   3. 来自其他 webview 的变更通过 postMessage 广播过来
+ * 【设计】
+ *   - install() 是异步的：先发 storageGetAll，等 EH 返回数据填充 store，
+ *     再替换 Storage.prototype。后续 `getItem` 直接从 store 同步返回。
+ *   - 没有竞态：store 在 prototype 替换前就已经有数据了。
+ *   - 使用方式（vscode-patch.tsx 顶部）：
  *
- * 初始化顺序：
- *   routeScript（写值到原生 localStorage）→ install()（读原生 localStorage）
- *   → 发 storageGetAll → 等回复合并 → 后续读写全走 store
- *
- * 使用方式：
- *   import { VSCodeStorageBridge } from "./vscode-storage-bridge"
- *   VSCodeStorageBridge.install()
- *   // 之后 localStorage.getItem/setItem 等全部走桥接
+ *     import { VSCodeStorageBridge } from "./vscode-storage-bridge"
+ *     await VSCodeStorageBridge.install()
+ *     // 从这行开始，localStorage.getItem 能读到 EH globalState 的数据
  */
 
 // ── 类型 ──
@@ -32,41 +28,47 @@ export class VSCodeStorageBridge {
   private static store: Record<string, string> = {}
   private static installed = false
 
-  // ── 安装 ──
-
   /**
    * 安装 Storage 桥接。
-   * 必须在 SDK 启动前调用（已在 vscode-patch.tsx 顶部调用）。
+   *
+   * 异步：向 EH 请求全量数据，等回复后填充 store，再替换 prototype。
+   * resolve 后所有 localStorage 读写都走 store，同步返回。
    */
-  static install() {
+  static async install() {
     if (typeof window === "undefined") return
     if (!VSCodeHttpProxy.api()) return
     if (this.installed) return
     this.installed = true
 
     this.store = {}
-    console.log("[storageBridge] init")
+    console.log("[storageBridge] init: requesting data from EH")
 
-    // 请求 Extension Host 的完整数据
-    VSCodeHttpProxy.postMessage({ source: "opencode-vscode-app", command: "storageGetAll" })
-
-    // 替换 Storage.prototype
-    this.hookPrototype()
-
-    // 监听 Extension Host 发来的更新
+    // 监听 storagePatch 回复
     window.addEventListener("message", this.onMessage)
-    console.log("[storageBridge] installed")
+
+    // 发请求，等数据回来
+    VSCodeHttpProxy.postMessage({ source: "opencode-vscode-app", command: "storageGetAll" })
+    await new Promise<void>((resolve) => {
+      this._resolveReady = resolve
+    })
+
+    // 数据已就绪，替换 prototype
+    this.hookPrototype()
+    console.log(`[storageBridge] installed: ${Object.keys(this.store).length} keys from EH`)
   }
+
+  private static _resolveReady: (() => void) | null = null
+  private static _readyCalled = false
 
   // ── 内部 ──
 
-  /** 替换 Storage.prototype 方法，全部走 store，不碰原生 localStorage */
+  /** 替换 Storage.prototype 方法，全部走 store */
   private static hookPrototype() {
     Storage.prototype.getItem = function (key: string): string | null {
       const val = Object.prototype.hasOwnProperty.call(VSCodeStorageBridge.store, key)
         ? VSCodeStorageBridge.store[key]
         : null
-      console.log(`[storageBridge] -- getItem("${key}") → ${val === null ? "null" : `"${val}"`}`)
+      console.log(`[storageBridge] getItem("${key}") → ${val === null ? "null" : `"${val}"`}`)
       return val
     }
 
@@ -128,7 +130,7 @@ export class VSCodeStorageBridge {
     } catch {}
   }
 
-  /** 处理 Extension Host 发来的 storagePatch 消息 */
+  /** 处理 EH 发来的 storagePatch 消息 */
   private static onMessage = (event: MessageEvent) => {
     if (!VSCodeHttpProxy.isBridgeMessage(event)) return
     const message = event.data
@@ -136,12 +138,22 @@ export class VSCodeStorageBridge {
     const patch = message.patch as StoragePatch | undefined
     if (!patch) return
 
+    if (patch.type === "replace" && patch.entries && typeof patch.entries === "object") {
+      for (const [key, value] of Object.entries(patch.entries)) {
+        if (typeof value === "string") VSCodeStorageBridge.store[key] = value
+      }
+      // 首次 replace 表示初始数据就绪，resolve install()
+      if (!VSCodeStorageBridge._readyCalled) {
+        VSCodeStorageBridge._readyCalled = true
+        VSCodeStorageBridge._resolveReady?.()
+      }
+      VSCodeStorageBridge.emitStorageEvent(null, null, null)
+      return
+    }
+
     if (patch.type === "set" && typeof patch.key === "string" && typeof patch.value === "string") {
-      const prev = Object.prototype.hasOwnProperty.call(VSCodeStorageBridge.store, patch.key)
-        ? VSCodeStorageBridge.store[patch.key]
-        : null
       VSCodeStorageBridge.store[patch.key] = patch.value
-      VSCodeStorageBridge.emitStorageEvent(patch.key, prev, patch.value)
+      VSCodeStorageBridge.emitStorageEvent(patch.key, null, patch.value)
       return
     }
 
@@ -153,17 +165,6 @@ export class VSCodeStorageBridge {
 
     if (patch.type === "clear") {
       VSCodeStorageBridge.store = {}
-      VSCodeStorageBridge.emitStorageEvent(null, null, null)
-      return
-    }
-
-    if (patch.type === "replace" && patch.entries && typeof patch.entries === "object") {
-      console.log(`[storageBridge] merge ${Object.keys(patch.entries).length} keys from EH`)
-      for (const [key, value] of Object.entries(patch.entries)) {
-        if (typeof value === "string") {
-          VSCodeStorageBridge.store[key] = value
-        }
-      }
       VSCodeStorageBridge.emitStorageEvent(null, null, null)
     }
   }
