@@ -56,6 +56,13 @@ class ExtensionHttpProxyBridge {
     this.activeControllers = new Map()
     /** 活跃的 WebSocket 连接集合 */
     this.webSocketSockets = new Map()
+    /**
+     * 后端真实地址（如 http://127.0.0.1:12377）。
+     * 由 extension.js 在后端启动后注入；用于把 webview 误用 location.origin 拼成的
+     * vscode-webview://<host>/<path> 请求改写回真实后端。
+     * 为空字符串表示未配置，此时不做改写。
+     */
+    this.baseUrl = ""
   }
 
   // ── 统一 HTTP/SSE 代理 ────────────────────────────
@@ -154,18 +161,45 @@ class ExtensionHttpProxyBridge {
   // ── URL 解析与安全检查 ─────────────────────────────
 
   /**
+   * 把 vscode-webview:// 协议的请求改写为后端真实地址。
+   *
+   * Webview 运行在 vscode-webview:// 协议下，前端代码误用 location.origin 作为 baseUrl 时，
+   * 会拼出 vscode-webview://<host>/<path> 这类请求（扩展没有对应的静态文件）。
+   * 这里仅替换 origin，保留 pathname + search + hash，转发到 baseUrl 指向的后端。
+   *
+   *   vscode-webview://xxx/global/config?a=1
+   *     -> http://127.0.0.1:12377/global/config?a=1
+   *
+   * 非 vscode-webview 协议、或 baseUrl 未配置时原样返回。
+   */
+  rewriteWebviewUrl(urlString) {
+    if (typeof urlString !== "string") return urlString
+    if (!this.baseUrl) return urlString
+    let url
+    try {
+      url = new URL(urlString)
+    } catch {
+      return urlString
+    }
+    if (url.protocol !== "vscode-webview:") return urlString
+    const rewritten = `${this.baseUrl.replace(/\/+$/, "")}${url.pathname}${url.search}${url.hash}`
+    this.log.appendLine(`[rewriteWebview] ${urlString} -> ${rewritten}`)
+    return rewritten
+  }
+
+  /**
    * 解析并验证请求 URL。
    *
-   * 安全检查：
-   *   - 仅允许 http/https/ws/wss 协议
-   *   - 仅允许 localhost/127.0.0.1
+   * 流程：
+   *   1. 先用 rewriteWebviewUrl 把 vscode-webview:// 改写为后端地址
+   *   2. 再做安全检查（仅允许 http/https/ws/wss + localhost/127.0.0.1）
    *
-   * URL 中的协议、host、port 保持原样，不做改写。
-   * 前端自己决定连哪个端口，后端只做安全校验。
+   * 改写后的 URL 已经是 http://127.0.0.1:...，会自然通过校验。
    */
   resolveUrl(urlString, expectedProtocol) {
-    if (typeof urlString !== "string") throw new Error("Missing proxy URL")
-    const url = new URL(urlString)
+    const rewritten = this.rewriteWebviewUrl(urlString)
+    if (typeof rewritten !== "string") throw new Error("Missing proxy URL")
+    const url = new URL(rewritten)
 
     if (expectedProtocol === "http") {
       if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Refusing non-HTTP proxy URL")

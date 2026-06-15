@@ -60,10 +60,16 @@ export class VSCodeHttpProxy {
       const request = new Request(input, init)
       const url = this.requestUrl(input)
       console.log(`[proxyHTTP] fetch ${request.method} ${request.url} protocol=${url.protocol} pathname=${url.pathname}`)
-      // vscode-webview:// 和 https://（asWebviewUri）协议的资源由 VSCode 内核提供
-      if (url.protocol === "vscode-webview:" || url.protocol === "https:") {
+      // https://（asWebviewUri）协议的资源由 VSCode 内核提供，直接放行
+      if (url.protocol === "https:") {
         console.log(`[proxyHTTP] bypass ${request.method} ${request.url} (${url.protocol} protocol)`)
         return originalFetch.call(window, request)
+      }
+      // vscode-webview:// 协议：前端误用 location.origin 拼出的请求（扩展无对应静态文件），
+      // 转发给 Extension Host，由其在 resolveUrl 中改写回真实后端地址
+      if (url.protocol === "vscode-webview:") {
+        console.log(`[proxyHTTP] intercept(vscode-webview) ${request.method} ${request.url}`)
+        return this.proxyFetch(request)
       }
       console.log(`[proxyHTTP] intercept ${request.method} ${request.url}`)
       return this.proxyFetch(request)

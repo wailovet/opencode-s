@@ -233,12 +233,16 @@ class OpenCodeAppViewProvider {
       
       console.log(`[storage] backend started on port ${this.backendPort}`)
       // 把后端地址写入共享 storage，SDK 通过 StorageBridge 同步后就能读到
+      const backendUrl = `http://127.0.0.1:${this.backendPort}`
       await this.storage.set(
         "opencode.settings.dat:defaultServerUrl",
-        `http://127.0.0.1:${this.backendPort}`,
+        backendUrl,
       )
-      output.appendLine(`[storage] wrote defaultServerUrl = http://127.0.0.1:${this.backendPort}`)
-      console.log(`[storage] wrote defaultServerUrl = http://127.0.0.1:${this.backendPort}`)
+      // 同步注入代理 baseUrl：webview 误用 location.origin 拼成的 vscode-webview:// 请求
+      // 会在 Extension Host 侧被改写回这个真实后端地址
+      this.proxy.baseUrl = backendUrl
+      output.appendLine(`[storage] wrote defaultServerUrl = ${backendUrl}`)
+      console.log(`[storage] wrote defaultServerUrl = ${backendUrl}`)
 
       this.view.webview.options = {
         enableScripts: true,
