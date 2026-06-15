@@ -23,8 +23,12 @@ async function openSettingsPanel(provider) {
     localResourceRoots: provider.localResourceRoots(),
   })
 
+  const messageListener = panel.webview.onDidReceiveMessage((message) =>
+    provider.handleMessage(message, panel.webview),
+  )
   panel.webview.html = provider.localAppHtml(panel.webview, { settings: true })
   panel.onDidDispose(() => {
+    messageListener.dispose()
     settingsPanel = undefined
   })
 
@@ -339,6 +343,7 @@ class OpenCodeAppViewProvider {
   }
 
   async httpProxy(message, webview) {
+    if (message?.url) output.appendLine("[httpProxy] " + message.method + " " + message.url)
     const requestId = message.requestId
     if (typeof requestId !== "string") return
     const controller = new AbortController()
