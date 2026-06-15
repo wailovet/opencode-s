@@ -27,9 +27,12 @@ type VSCodeWindow = typeof window & {
   __opencodeVSCodeAssetBase?: string
   __opencodeVSCodeAssetPathPatched?: boolean
   __opencodeVSCodeBackendUrl?: string
+  __opencodeVSCodeStoragePatched?: boolean
+  __opencodeVSCodeStorageSnapshot?: Record<string, string>
 }
 
 normalizeVSCodeLocationDirectory()
+installVSCodeStorageBridge()
 installVSCodeBackendUrl()
 installVSCodeHttpProxyBridge()
 installVSCodeWebSocketProxyBridge()
@@ -163,6 +166,159 @@ function rewriteVSCodeAssetPath(value: string) {
 function requestUrl(input: RequestInfo | URL) {
   if (input instanceof Request) return new URL(input.url)
   return new URL(String(input), window.location.href)
+}
+
+function vscodeBackendUrl(input: string, protocol: "http" | "ws" = "http") {
+  const target = window as VSCodeWindow
+  if (!target.__opencodeVSCodeBackendUrl) return input
+  const url = new URL(input, window.location.href)
+  const backend = new URL(target.__opencodeVSCodeBackendUrl)
+  url.protocol = protocol === "ws" ? "ws:" : backend.protocol
+  url.hostname = backend.hostname
+  url.port = backend.port
+  return url.toString()
+}
+
+function installVSCodeStorageBridge() {
+  if (typeof window === "undefined") return
+  if (!vscodeApi()) return
+  const target = window as VSCodeWindow
+  if (target.__opencodeVSCodeStoragePatched) return
+  target.__opencodeVSCodeStoragePatched = true
+
+  const storage = window.localStorage
+  const native = {
+    getItem: Storage.prototype.getItem,
+    setItem: Storage.prototype.setItem,
+    removeItem: Storage.prototype.removeItem,
+    clear: Storage.prototype.clear,
+    key: Storage.prototype.key,
+    length: Object.getOwnPropertyDescriptor(Storage.prototype, "length")?.get,
+  }
+  const store: Record<string, string> = { ...(target.__opencodeVSCodeStorageSnapshot ?? {}) }
+  const hasSnapshot = Object.keys(store).length > 0
+
+  if (!hasSnapshot) {
+    for (let i = 0; i < storage.length; i++) {
+      const key = native.key.call(storage, i)
+      if (!key) continue
+      const value = native.getItem.call(storage, key)
+      if (value !== null) store[key] = value
+    }
+    postVSCodeMessage({ source: "opencode-vscode-app", command: "storageReplace", entries: { ...store } })
+  }
+
+  const keys = () => Object.keys(store)
+  const syncNativeSet = (key: string, value: string) => {
+    try {
+      native.setItem.call(storage, key, value)
+    } catch {}
+  }
+  const syncNativeRemove = (key: string) => {
+    try {
+      native.removeItem.call(storage, key)
+    } catch {}
+  }
+  const syncNativeClear = () => {
+    try {
+      native.clear.call(storage)
+    } catch {}
+  }
+  const emitStorage = (key: string | null, oldValue: string | null, newValue: string | null) => {
+    try {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key,
+          oldValue,
+          newValue,
+          storageArea: storage,
+          url: window.location.href,
+        }),
+      )
+    } catch {
+      window.dispatchEvent(new Event("storage"))
+    }
+  }
+
+  Storage.prototype.getItem = function (key) {
+    if (this !== storage) return native.getItem.call(this, key)
+    return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null
+  }
+  Storage.prototype.setItem = function (key, value) {
+    if (this !== storage) return native.setItem.call(this, key, value)
+    const next = String(value)
+    const previous = Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null
+    store[key] = next
+    syncNativeSet(key, next)
+    postVSCodeMessage({ source: "opencode-vscode-app", command: "storageSet", key, value: next })
+    emitStorage(key, previous, next)
+  }
+  Storage.prototype.removeItem = function (key) {
+    if (this !== storage) return native.removeItem.call(this, key)
+    const previous = Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null
+    delete store[key]
+    syncNativeRemove(key)
+    postVSCodeMessage({ source: "opencode-vscode-app", command: "storageRemove", key })
+    emitStorage(key, previous, null)
+  }
+  Storage.prototype.clear = function () {
+    if (this !== storage) return native.clear.call(this)
+    const hadValues = keys().length > 0
+    for (const key of keys()) delete store[key]
+    syncNativeClear()
+    postVSCodeMessage({ source: "opencode-vscode-app", command: "storageClear" })
+    if (hadValues) emitStorage(null, null, null)
+  }
+  Storage.prototype.key = function (index) {
+    if (this !== storage) return native.key.call(this, index)
+    return keys()[index] ?? null
+  }
+  try {
+    Object.defineProperty(Storage.prototype, "length", {
+      configurable: true,
+      get() {
+        if (this !== storage) return native.length?.call(this) ?? 0
+        return keys().length
+      },
+    })
+  } catch {}
+
+  window.addEventListener("message", (event) => {
+    if (!isVSCodeBridgeMessage(event)) return
+    const message = event.data
+    if (!message || message.source !== "opencode-vscode-app" || message.command !== "storagePatch") return
+    const patch = message.patch
+    if (!patch || typeof patch !== "object") return
+    if (patch.type === "set" && typeof patch.key === "string" && typeof patch.value === "string") {
+      const previous = Object.prototype.hasOwnProperty.call(store, patch.key) ? store[patch.key] : null
+      store[patch.key] = patch.value
+      syncNativeSet(patch.key, patch.value)
+      emitStorage(patch.key, previous, patch.value)
+      return
+    }
+    if (patch.type === "remove" && typeof patch.key === "string") {
+      const previous = Object.prototype.hasOwnProperty.call(store, patch.key) ? store[patch.key] : null
+      delete store[patch.key]
+      syncNativeRemove(patch.key)
+      emitStorage(patch.key, previous, null)
+      return
+    }
+    if (patch.type === "clear") {
+      for (const key of keys()) delete store[key]
+      syncNativeClear()
+      emitStorage(null, null, null)
+      return
+    }
+    if (patch.type === "replace" && patch.entries && typeof patch.entries === "object") {
+      for (const key of keys()) delete store[key]
+      for (const [key, value] of Object.entries(patch.entries)) {
+        if (typeof value === "string") store[key] = value
+      }
+      syncNativeClear()
+      for (const [key, value] of Object.entries(store)) syncNativeSet(key, value)
+      emitStorage(null, null, null)
+    }
+  })
 }
 
 function vscodeApi() {
@@ -437,7 +593,7 @@ class VSCodeProxyWebSocket extends EventTarget {
       source: "opencode-vscode-app",
       command: "webSocketProxyOpen",
       requestId: this.requestId,
-      url: this.url,
+      url: vscodeBackendUrl(this.url, "ws"),
       protocols,
     })
   }
@@ -518,7 +674,7 @@ async function webSocketPayload(data: string | ArrayBufferLike | Blob | ArrayBuf
 
 async function proxyRequestPayload(request: Request) {
   return {
-    url: request.url,
+    url: vscodeBackendUrl(request.url),
     method: request.method,
     headers: [...request.headers.entries()],
     body:

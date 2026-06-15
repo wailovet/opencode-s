@@ -24,8 +24,8 @@
         },
         "opencodeVscodeApp.backendPort": {
           "type": "number",
-          "default": 4096,
-          "description": "Local opencode backend port used by the VS Code app webview."
+          "default": 0,
+          "description": "Local opencode backend port used by the VS Code app webview. Use 0 to allocate a random port and save it to this setting."
         },
         "opencodeVscodeApp.webPort": {
           "type": "number",

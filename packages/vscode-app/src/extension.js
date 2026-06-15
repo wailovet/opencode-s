@@ -7,6 +7,7 @@ const vscode = require("vscode")
 
 const output = vscode.window.createOutputChannel("opencode App")
 const processes = new Map()
+const WEBVIEW_STORAGE_KEY = "opencode.vscode.storage"
 let settingsPanel = undefined
 // sessionId -> { panel, title }，复用同一 session 的 panel
 const sessionPanels = new Map()
@@ -179,6 +180,18 @@ class OpenCodeAppViewProvider {
     if (message.command === "pickDirectory") {
       await this.pickDirectory(message, webview)
     }
+    if (message.command === "storageSet") {
+      await this.storageSet(message, webview)
+    }
+    if (message.command === "storageRemove") {
+      await this.storageRemove(message, webview)
+    }
+    if (message.command === "storageClear") {
+      await this.storageClear(webview)
+    }
+    if (message.command === "storageReplace") {
+      await this.storageReplace(message, webview)
+    }
     if (message.command === "httpProxyRequest") {
       await this.httpProxy(message, webview)
     }
@@ -232,7 +245,7 @@ class OpenCodeAppViewProvider {
   ports() {
     const config = vscode.workspace.getConfiguration("opencodeVscodeApp")
     return {
-      backend: config.get("backendPort", 4096),
+      backend: normalizePort(config.get("backendPort", 0)),
       web: config.get("webPort", 4444),
     }
   }
@@ -286,7 +299,9 @@ class OpenCodeAppViewProvider {
   }
 
   backendUrl() {
-    return this.backendPort ? `http://127.0.0.1:${this.backendPort}` : "http://127.0.0.1:4096"
+    const port = this.backendPort || this.ports().backend
+    if (!port) throw new Error("opencode backend port is not initialized")
+    return `http://127.0.0.1:${port}`
   }
 
   canUseLocalWebview() {
@@ -309,12 +324,57 @@ class OpenCodeAppViewProvider {
     const assetBase = webview.asWebviewUri(vscode.Uri.file(path.join(webDistDir, "assets"))).toString() + "/"
     output.appendLine("[localAppHtml] appPath=" + JSON.stringify(this.appPath(options)) + " distDir=" + this.webDistDir())
     const routeScript = `<meta http-equiv="Content-Security-Policy" content="${localWebviewCsp(webview, nonce)}">
-    <script nonce="${nonce}">window.__opencodeVSCodeAssetBase = ${JSON.stringify(assetBase)}; window.__opencodeVSCodeAppPath = ${JSON.stringify(this.appPath(options))}; window.__opencodeVSCodeBackendUrl = ${JSON.stringify(this.backendUrl())}; history.replaceState(history.state, "", ${JSON.stringify(this.appPath(options))})</script>`
+    <script nonce="${nonce}">window.__opencodeVSCodeAssetBase = ${JSON.stringify(assetBase)}; window.__opencodeVSCodeAppPath = ${JSON.stringify(this.appPath(options))}; window.__opencodeVSCodeBackendUrl = ${JSON.stringify(this.backendUrl())}; window.__opencodeVSCodeStorageSnapshot = ${JSON.stringify(this.storageSnapshot())}; (function(){try{var s=window.__opencodeVSCodeStorageSnapshot||{};if(Object.keys(s).length){localStorage.clear();Object.keys(s).forEach(function(k){localStorage.setItem(k,String(s[k]))})}}catch(e){}})(); history.replaceState(history.state, "", ${JSON.stringify(this.appPath(options))})</script>`
     return injectLocalSpriteSymbols(
       rewriteLocalAppHtml(html, webview, webDistDir, nonce).replace(/<head([^>]*)>/i, `<head$1>
     ${routeScript}`),
       webDistDir,
     )
+  }
+
+  storageSnapshot() {
+    return normalizeStorageSnapshot(this.context.globalState.get(WEBVIEW_STORAGE_KEY))
+  }
+
+  async storageSet(message, sourceWebview) {
+    if (typeof message.key !== "string" || typeof message.value !== "string") return
+    const next = { ...this.storageSnapshot(), [message.key]: message.value }
+    await this.context.globalState.update(WEBVIEW_STORAGE_KEY, next)
+    this.broadcastStorage({ type: "set", key: message.key, value: message.value }, sourceWebview)
+  }
+
+  async storageRemove(message, sourceWebview) {
+    if (typeof message.key !== "string") return
+    const next = { ...this.storageSnapshot() }
+    delete next[message.key]
+    await this.context.globalState.update(WEBVIEW_STORAGE_KEY, next)
+    this.broadcastStorage({ type: "remove", key: message.key }, sourceWebview)
+  }
+
+  async storageClear(sourceWebview) {
+    await this.context.globalState.update(WEBVIEW_STORAGE_KEY, {})
+    this.broadcastStorage({ type: "clear" }, sourceWebview)
+  }
+
+  async storageReplace(message, sourceWebview) {
+    const next = normalizeStorageSnapshot(message.entries)
+    await this.context.globalState.update(WEBVIEW_STORAGE_KEY, next)
+    this.broadcastStorage({ type: "replace", entries: next }, sourceWebview)
+  }
+
+  broadcastStorage(patch, sourceWebview) {
+    for (const webview of this.webviews()) {
+      if (webview === sourceWebview) continue
+      void webview.postMessage({ source: "opencode-vscode-app", command: "storagePatch", patch })
+    }
+  }
+
+  webviews() {
+    return [
+      this.view?.webview,
+      settingsPanel?.webview,
+      ...[...sessionPanels.values()].map((entry) => entry.panel.webview),
+    ].filter(Boolean)
   }
 
   async pickDirectory(message, webview) {
@@ -343,18 +403,20 @@ class OpenCodeAppViewProvider {
   }
 
   async httpProxy(message, webview) {
-    if (message?.url) output.appendLine("[httpProxy] " + message.method + " " + message.url)
     const requestId = message.requestId
     if (typeof requestId !== "string") return
+    const targetUrl = this.httpProxyUrl(message)
+    output.appendLine(`[httpProxy] ${message.method ?? "GET"} ${message.url} -> ${targetUrl}`)
     const controller = new AbortController()
     this.httpProxyControllers.set(requestId, controller)
     try {
-      const response = await fetch(this.httpProxyUrl(message), {
+      const response = await fetch(targetUrl, {
         method: typeof message.method === "string" ? message.method : "GET",
         headers: this.httpProxyHeaders(message.headers),
         body: typeof message.body === "string" ? Buffer.from(message.body, "base64") : undefined,
         signal: controller.signal,
       })
+      output.appendLine(`[httpProxy] response ${response.status} ${response.statusText} ${targetUrl}`)
       const body = Buffer.from(await response.arrayBuffer()).toString("base64")
       await webview.postMessage({
         source: "opencode-vscode-app",
@@ -367,6 +429,9 @@ class OpenCodeAppViewProvider {
       })
     } catch (error) {
       if (controller.signal.aborted) return
+      output.appendLine(
+        `[httpProxy] error ${targetUrl}: ${error instanceof Error ? error.message : String(error)}`,
+      )
       await webview.postMessage({
         source: "opencode-vscode-app",
         command: "httpProxyResponse",
@@ -414,15 +479,18 @@ class OpenCodeAppViewProvider {
   async sseProxy(message, webview) {
     const requestId = message.requestId
     if (typeof requestId !== "string") return
+    const targetUrl = this.httpProxyUrl(message)
+    output.appendLine(`[sseProxy] ${message.method ?? "GET"} ${message.url} -> ${targetUrl}`)
     const controller = new AbortController()
     this.sseProxyControllers.set(requestId, controller)
     try {
-      const response = await fetch(this.httpProxyUrl(message), {
+      const response = await fetch(targetUrl, {
         method: typeof message.method === "string" ? message.method : "GET",
         headers: this.httpProxyHeaders(message.headers),
         body: typeof message.body === "string" ? Buffer.from(message.body, "base64") : undefined,
         signal: controller.signal,
       })
+      output.appendLine(`[sseProxy] response ${response.status} ${response.statusText} ${targetUrl}`)
       if (!response.ok || !response.body) {
         throw new Error(`SSE proxy failed with ${response.status} ${response.statusText}`)
       }
@@ -442,8 +510,12 @@ class OpenCodeAppViewProvider {
         command: "sseProxyClose",
         requestId,
       })
+      output.appendLine(`[sseProxy] close ${targetUrl}`)
     } catch (error) {
       if (controller.signal.aborted) return
+      output.appendLine(
+        `[sseProxy] error ${targetUrl}: ${error instanceof Error ? error.message : String(error)}`,
+      )
       await webview.postMessage({
         source: "opencode-vscode-app",
         command: "sseProxyError",
@@ -460,10 +532,13 @@ class OpenCodeAppViewProvider {
     if (typeof requestId !== "string") return
     try {
       if (typeof WebSocket !== "function") throw new Error("WebSocket is not available in the VS Code extension host")
-      const socket = new WebSocket(this.webSocketProxyUrl(message), normalizeWebSocketProtocols(message.protocols))
+      const targetUrl = this.webSocketProxyUrl(message)
+      output.appendLine(`[webSocketProxy] ${message.url} -> ${targetUrl}`)
+      const socket = new WebSocket(targetUrl, normalizeWebSocketProtocols(message.protocols))
       socket.binaryType = "arraybuffer"
       this.webSocketProxySockets.set(requestId, socket)
       socket.addEventListener("open", async () => {
+        output.appendLine(`[webSocketProxy] open ${targetUrl}`)
         await webview.postMessage({
           source: "opencode-vscode-app",
           command: "webSocketProxyOpen",
@@ -480,6 +555,7 @@ class OpenCodeAppViewProvider {
         })
       })
       socket.addEventListener("error", async () => {
+        output.appendLine(`[webSocketProxy] error ${targetUrl}`)
         await webview.postMessage({
           source: "opencode-vscode-app",
           command: "webSocketProxyError",
@@ -488,6 +564,9 @@ class OpenCodeAppViewProvider {
       })
       socket.addEventListener("close", async (event) => {
         this.webSocketProxySockets.delete(requestId)
+        output.appendLine(
+          `[webSocketProxy] close ${targetUrl} code=${event.code} reason=${event.reason} clean=${event.wasClean}`,
+        )
         await webview.postMessage({
           source: "opencode-vscode-app",
           command: "webSocketProxyClose",
@@ -585,17 +664,15 @@ class OpenCodeAppViewProvider {
   }
 }
 
-// 解析 opencode 后端端口。策略：
-// 1. 读 vscode 配置 opencodeVscodeApp.backendPort（用户可自由设置）
-// 2. 如果该端口空闲，或已被我们的 opencode 占用（无 auth 响应 OK），直接用
-// 3. 否则随机分配一个可用端口，并写回配置（持久化，下次启动直接用）
-// 统一打包/dev 模式，不再区分。
+// A configured backendPort is authoritative. Use 0 to allocate and persist a random port.
 async function resolveBackendPort(context, config) {
-  const preferred = config.get("backendPort", 4096)
-  if (!(await isPortOpen(preferred))) return preferred
-  if (await requestWithoutAuthOk(`http://127.0.0.1:${preferred}`)) return preferred
+  const configured = normalizePort(config.get("backendPort", 0))
+  if (configured) {
+    output.appendLine(`[opencode] using configured backend port ${configured}`)
+    return configured
+  }
   const port = await findAvailablePort()
-  output.appendLine(`[opencode] port ${preferred} is occupied, using ${port} and saving to settings`)
+  output.appendLine(`[opencode] backendPort is not configured, using ${port} and saving to settings`)
   await config.update("backendPort", port, true)
   return port
 }
@@ -794,6 +871,20 @@ function workspaceDirFromVSCode() {
 function normalizeWorkspaceDir(directory) {
   if (!directory) return directory
   return directory.replace(/^[a-z]:/, (drive) => drive.toUpperCase())
+}
+
+function normalizePort(value) {
+  const port = Number(value)
+  if (!Number.isInteger(port)) return 0
+  if (port < 1 || port > 65535) return 0
+  return port
+}
+
+function normalizeStorageSnapshot(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  return Object.fromEntries(
+    Object.entries(value).filter((entry) => typeof entry[0] === "string" && typeof entry[1] === "string"),
+  )
 }
 
 function stopProcesses() {
