@@ -16,12 +16,15 @@ import { DataProvider } from "@opencode-ai/ui/context"
 import { useSync } from "@/context/sync"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { VSCodeHttpProxy } from "./vscode-http-proxy"
+import { VSCodeStorageBridge } from "./vscode-storage-bridge"
 
+console.log("[vscode-patch] init start")
 VSCodeHttpProxy.install()
+VSCodeStorageBridge.install()
 normalizeVSCodeLocationDirectory()
-installVSCodeStorageBridge()
 installVSCodeChromeStyle()
 markVSCodeSessionOpen()
+console.log("[vscode-patch] init complete")
 
 function normalizeVSCodeDirectory(directory: string) {
   return directory.replace(/^[a-z]:/, (drive) => drive.toUpperCase())
@@ -52,138 +55,6 @@ function installVSCodeChromeStyle() {
     }
   `
   document.head.append(style)
-}
-
-function installVSCodeStorageBridge() {
-  if (typeof window === "undefined") return
-  if (!VSCodeHttpProxy.api()) return
-  if ((window as any).__opencodeVSCodeStoragePatched) return
-  ;(window as any).__opencodeVSCodeStoragePatched = true
-
-  const storage = window.localStorage
-  const native = {
-    getItem: Storage.prototype.getItem,
-    setItem: Storage.prototype.setItem,
-    removeItem: Storage.prototype.removeItem,
-    clear: Storage.prototype.clear,
-    key: Storage.prototype.key,
-    length: Object.getOwnPropertyDescriptor(Storage.prototype, "length")?.get,
-  }
-  // store 初始为空，通过 storageGetAll 从 Extension Host 拉取真实数据
-  const store: Record<string, string> = {}
-  VSCodeHttpProxy.postMessage({ source: "opencode-vscode-app", command: "storageGetAll" })
-
-  const keys = () => Object.keys(store)
-  const syncNativeSet = (key: string, value: string) => {
-    try {
-      native.setItem.call(storage, key, value)
-    } catch {}
-  }
-  const syncNativeRemove = (key: string) => {
-    try {
-      native.removeItem.call(storage, key)
-    } catch {}
-  }
-  const syncNativeClear = () => {
-    try {
-      native.clear.call(storage)
-    } catch {}
-  }
-  const emitStorage = (key: string | null, oldValue: string | null, newValue: string | null) => {
-    try {
-      window.dispatchEvent(
-        new StorageEvent("storage", {
-          key,
-          oldValue,
-          newValue,
-          storageArea: storage,
-          url: window.location.href,
-        }),
-      )
-    } catch {
-      window.dispatchEvent(new Event("storage"))
-    }
-  }
-
-  Storage.prototype.getItem = function (key) {
-    if (this !== storage) return native.getItem.call(this, key)
-    return Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null
-  }
-  Storage.prototype.setItem = function (key, value) {
-    if (this !== storage) return native.setItem.call(this, key, value)
-    const next = String(value)
-    const previous = Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null
-    store[key] = next
-    syncNativeSet(key, next)
-    VSCodeHttpProxy.postMessage({ source: "opencode-vscode-app", command: "storageSet", key, value: next })
-    emitStorage(key, previous, next)
-  }
-  Storage.prototype.removeItem = function (key) {
-    if (this !== storage) return native.removeItem.call(this, key)
-    const previous = Object.prototype.hasOwnProperty.call(store, key) ? store[key] : null
-    delete store[key]
-    syncNativeRemove(key)
-    VSCodeHttpProxy.postMessage({ source: "opencode-vscode-app", command: "storageRemove", key })
-    emitStorage(key, previous, null)
-  }
-  Storage.prototype.clear = function () {
-    if (this !== storage) return native.clear.call(this)
-    const hadValues = keys().length > 0
-    for (const key of keys()) delete store[key]
-    syncNativeClear()
-    VSCodeHttpProxy.postMessage({ source: "opencode-vscode-app", command: "storageClear" })
-    if (hadValues) emitStorage(null, null, null)
-  }
-  Storage.prototype.key = function (index) {
-    if (this !== storage) return native.key.call(this, index)
-    return keys()[index] ?? null
-  }
-  try {
-    Object.defineProperty(Storage.prototype, "length", {
-      configurable: true,
-      get() {
-        if (this !== storage) return native.length?.call(this) ?? 0
-        return keys().length
-      },
-    })
-  } catch {}
-
-  window.addEventListener("message", (event) => {
-    if (!VSCodeHttpProxy.isBridgeMessage(event)) return
-    const message = event.data
-    if (!message || message.source !== "opencode-vscode-app" || message.command !== "storagePatch") return
-    const patch = message.patch
-    if (!patch || typeof patch !== "object") return
-    if (patch.type === "set" && typeof patch.key === "string" && typeof patch.value === "string") {
-      const previous = Object.prototype.hasOwnProperty.call(store, patch.key) ? store[patch.key] : null
-      store[patch.key] = patch.value
-      syncNativeSet(patch.key, patch.value)
-      emitStorage(patch.key, previous, patch.value)
-      return
-    }
-    if (patch.type === "remove" && typeof patch.key === "string") {
-      const previous = Object.prototype.hasOwnProperty.call(store, patch.key) ? store[patch.key] : null
-      delete store[patch.key]
-      syncNativeRemove(patch.key)
-      emitStorage(patch.key, previous, null)
-      return
-    }
-    if (patch.type === "clear") {
-      for (const key of keys()) delete store[key]
-      syncNativeClear()
-      emitStorage(null, null, null)
-      return
-    }
-    if (patch.type === "replace" && patch.entries && typeof patch.entries === "object") {
-      for (const key of keys()) delete store[key]
-      for (const [key, value] of Object.entries(patch.entries)) {
-        if (typeof value === "string") store[key] = value
-      }
-      syncNativeClear()
-      for (const [key, value] of Object.entries(store)) syncNativeSet(key, value)
-      emitStorage(null, null, null)
-    }
-  })
 }
 
 export function openVSCodeSession(directory: string, sessionId: string) {

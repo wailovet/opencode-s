@@ -38,9 +38,16 @@ export class VSCodeHttpProxy {
    */
   static install() {
     if (typeof window === "undefined") return
-    if (!this.api()) return
+    const hasApi = !!this.api()
+    console.log(`[proxyHTTP] install: vscodeApi=${hasApi} localStorage defaultServerUrl=${window.localStorage.getItem("opencode.settings.dat:defaultServerUrl")}`)
+    if (!hasApi) {
+      console.log("[proxyHTTP] skipped: vscodeApi() not available")
+      return
+    }
+    console.log("[proxyHTTP] installing proxy bridge")
     this.installHttpProxy()
     this.installWebSocketProxy()
+    console.log("[proxyHTTP] proxy bridge installed")
   }
 
   private static installHttpProxy() {
@@ -52,8 +59,10 @@ export class VSCodeHttpProxy {
     window.fetch = async (input, init) => {
       const request = new Request(input, init)
       const url = this.requestUrl(input)
+      console.log(`[proxyHTTP] fetch ${request.method} ${request.url} protocol=${url.protocol} pathname=${url.pathname}`)
       // vscode-webview:// 和 https://（asWebviewUri）协议的资源由 VSCode 内核提供
       if (url.protocol === "vscode-webview:" || url.protocol === "https:") {
+        console.log(`[proxyHTTP] bypass ${request.method} ${request.url} (${url.protocol} protocol)`)
         return originalFetch.call(window, request)
       }
       console.log(`[proxyHTTP] intercept ${request.method} ${request.url}`)
@@ -163,6 +172,7 @@ export class VSCodeHttpProxy {
   private static async proxyFetch(input: RequestInfo | URL, init?: RequestInit) {
     const request = new Request(input, init)
     const requestId = this.createRequestId()
+    console.log(`[proxyHTTP] proxyFetch ${requestId} enter ${request.method} ${request.url}`)
 
     if (request.signal.aborted) throw this.abortError()
 

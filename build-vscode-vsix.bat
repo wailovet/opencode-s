@@ -92,10 +92,16 @@ if not exist "%OPENCODE_EXE%" (
 )
 :opencode_done
 
-if not exist "%APP_DIST_DIR%\index.html" (
-  echo [error] Cannot find app web dist: "%APP_DIST_DIR%\index.html"
+echo [*] Building web application dist...
+if exist "%APP_DIST_DIR%" rmdir /s /q "%APP_DIST_DIR%"
+pushd "%ROOT%packages\app"
+call bun run build
+if errorlevel 1 (
+  echo [error] App build failed.
+  popd
   exit /b 1
 )
+popd
 
 echo [3/4] Preparing package staging directory...
 copy "%EXT_DIR%\package.json" "%STAGE_DIR%\" >nul

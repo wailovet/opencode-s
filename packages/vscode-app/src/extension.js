@@ -5,10 +5,10 @@ const net = require("net")
 const path = require("path")
 const vscode = require("vscode")
 const { ExtensionHttpProxyBridge } = require("./extension-proxy")
+const { VSCodeStorageBridge } = require("./extension-storage")
 
 const output = vscode.window.createOutputChannel("opencode App")
 const processes = new Map()
-const WEBVIEW_STORAGE_KEY = "opencode.vscode.storage"
 let settingsPanel = undefined
 // sessionId -> { panel, title }，复用同一 session 的 panel
 const sessionPanels = new Map()
@@ -151,6 +151,7 @@ class OpenCodeAppViewProvider {
     this.runtimePort = undefined
     this.backendPort = undefined
     this.proxy = new ExtensionHttpProxyBridge(output)
+    this.storage = new VSCodeStorageBridge(context, (patch, sourceWebview) => this.broadcastStorage(patch, sourceWebview))
   }
 
   resolveWebviewView(view) {
@@ -180,19 +181,19 @@ class OpenCodeAppViewProvider {
       await this.pickDirectory(message, webview)
     }
     if (message.command === "storageSet") {
-      await this.storageSet(message, webview)
+      await this.storage.handleSet(message, webview)
     }
     if (message.command === "storageRemove") {
-      await this.storageRemove(message, webview)
+      await this.storage.handleRemove(message, webview)
     }
     if (message.command === "storageClear") {
-      await this.storageClear(webview)
+      await this.storage.handleClear(webview)
     }
     if (message.command === "storageReplace") {
-      await this.storageReplace(message, webview)
+      await this.storage.handleReplace(message, webview)
     }
     if (message.command === "storageGetAll") {
-      this.storageGetAll(webview)
+      this.storage.handleGetAll(webview)
     }
     if (message.command === "proxyFetch") {
       await this.proxy.proxyFetch(message, webview)
@@ -228,6 +229,17 @@ class OpenCodeAppViewProvider {
       const ports = await ensureServices(this.context)
       this.runtimePort = ports.web
       this.backendPort = ports.backend
+      output.appendLine(`[storage] backend started on port ${this.backendPort}`)
+      
+      console.log(`[storage] backend started on port ${this.backendPort}`)
+      // 把后端地址写入共享 storage，SDK 通过 StorageBridge 同步后就能读到
+      await this.storage.set(
+        "opencode.settings.dat:defaultServerUrl",
+        `http://127.0.0.1:${this.backendPort}`,
+      )
+      output.appendLine(`[storage] wrote defaultServerUrl = http://127.0.0.1:${this.backendPort}`)
+      console.log(`[storage] wrote defaultServerUrl = http://127.0.0.1:${this.backendPort}`)
+
       this.view.webview.options = {
         enableScripts: true,
         localResourceRoots: this.localResourceRoots(),
@@ -319,45 +331,6 @@ class OpenCodeAppViewProvider {
     ${routeScript}`),
       webDistDir,
     )
-  }
-
-  storageSnapshot() {
-    return normalizeStorageSnapshot(this.context.globalState.get(WEBVIEW_STORAGE_KEY))
-  }
-
-  async storageSet(message, sourceWebview) {
-    if (typeof message.key !== "string" || typeof message.value !== "string") return
-    const next = { ...this.storageSnapshot(), [message.key]: message.value }
-    await this.context.globalState.update(WEBVIEW_STORAGE_KEY, next)
-    this.broadcastStorage({ type: "set", key: message.key, value: message.value }, sourceWebview)
-  }
-
-  async storageRemove(message, sourceWebview) {
-    if (typeof message.key !== "string") return
-    const next = { ...this.storageSnapshot() }
-    delete next[message.key]
-    await this.context.globalState.update(WEBVIEW_STORAGE_KEY, next)
-    this.broadcastStorage({ type: "remove", key: message.key }, sourceWebview)
-  }
-
-  async storageClear(sourceWebview) {
-    await this.context.globalState.update(WEBVIEW_STORAGE_KEY, {})
-    this.broadcastStorage({ type: "clear" }, sourceWebview)
-  }
-
-  async storageReplace(message, sourceWebview) {
-    const next = normalizeStorageSnapshot(message.entries)
-    await this.context.globalState.update(WEBVIEW_STORAGE_KEY, next)
-    this.broadcastStorage({ type: "replace", entries: next }, sourceWebview)
-  }
-
-  storageGetAll(webview) {
-    const entries = this.storageSnapshot()
-    webview.postMessage({
-      source: "opencode-vscode-app",
-      command: "storagePatch",
-      patch: { type: "replace", entries },
-    })
   }
 
   broadcastStorage(patch, sourceWebview) {
@@ -651,13 +624,6 @@ function normalizePort(value) {
   if (!Number.isInteger(port)) return 0
   if (port < 1 || port > 65535) return 0
   return port
-}
-
-function normalizeStorageSnapshot(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
-  return Object.fromEntries(
-    Object.entries(value).filter((entry) => typeof entry[0] === "string" && typeof entry[1] === "string"),
-  )
 }
 
 function stopProcesses() {
