@@ -46,8 +46,19 @@ if errorlevel 1 (
 if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 if errorlevel 1 exit /b 1
 
-if exist "%STAGE_DIR%" rmdir /s /q "%STAGE_DIR%"
-if errorlevel 1 exit /b 1
+echo [0/4] Cleaning previous build artifacts...
+taskkill /f /im opencode.exe >nul 2>nul
+taskkill /f /im node.exe >nul 2>nul
+if exist "%STAGE_DIR%" (
+  for /l %%i in (1,1,5) do (
+    timeout /t 1 /nobreak >nul
+    rmdir /s /q "%STAGE_DIR%" 2>nul
+    if not exist "%STAGE_DIR%" goto :stage_cleaned
+  )
+  echo [error] Cannot remove "%STAGE_DIR%" - file is locked.
+  exit /b 1
+)
+:stage_cleaned
 
 mkdir "%STAGE_DIR%"
 if errorlevel 1 exit /b 1

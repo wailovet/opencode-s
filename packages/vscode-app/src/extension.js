@@ -4,6 +4,7 @@ const http = require("http")
 const net = require("net")
 const path = require("path")
 const vscode = require("vscode")
+const { ExtensionHttpProxyBridge } = require("./extension-proxy")
 
 const output = vscode.window.createOutputChannel("opencode App")
 const processes = new Map()
@@ -149,9 +150,7 @@ class OpenCodeAppViewProvider {
     this.view = undefined
     this.runtimePort = undefined
     this.backendPort = undefined
-    this.httpProxyControllers = new Map()
-    this.sseProxyControllers = new Map()
-    this.webSocketProxySockets = new Map()
+    this.proxy = new ExtensionHttpProxyBridge(output)
   }
 
   resolveWebviewView(view) {
@@ -192,26 +191,23 @@ class OpenCodeAppViewProvider {
     if (message.command === "storageReplace") {
       await this.storageReplace(message, webview)
     }
-    if (message.command === "httpProxyRequest") {
-      await this.httpProxy(message, webview)
+    if (message.command === "storageGetAll") {
+      this.storageGetAll(webview)
     }
-    if (message.command === "httpProxyCancel") {
-      this.cancelHttpProxy(message)
+    if (message.command === "proxyFetch") {
+      await this.proxy.proxyFetch(message, webview)
     }
-    if (message.command === "sseProxyOpen") {
-      await this.sseProxy(message, webview)
-    }
-    if (message.command === "sseProxyCancel") {
-      this.cancelSseProxy(message)
+    if (message.command === "proxyCancel") {
+      this.proxy.cancelProxy(message)
     }
     if (message.command === "webSocketProxyOpen") {
-      this.webSocketProxy(message, webview)
+      this.proxy.webSocketProxy(message, webview)
     }
     if (message.command === "webSocketProxySend") {
-      this.sendWebSocketProxy(message)
+      this.proxy.sendWebSocketProxy(message)
     }
     if (message.command === "webSocketProxyClose") {
-      this.closeWebSocketProxy(message)
+      this.proxy.closeWebSocketProxy(message)
     }
     if (message.command === "openSessionPanel") {
       await openSessionPanel(this, message.sessionDir, message.sessionId, webview)
@@ -298,12 +294,6 @@ class OpenCodeAppViewProvider {
     return roots
   }
 
-  backendUrl() {
-    const port = this.backendPort || this.ports().backend
-    if (!port) throw new Error("opencode backend port is not initialized")
-    return `http://127.0.0.1:${port}`
-  }
-
   canUseLocalWebview() {
     // dev 和打包模式统一：只要有构建产物 dist/index.html 就用本地 webview（acquireVsCodeApi）。
     return fs.existsSync(path.join(this.webDistDir(), "index.html"))
@@ -321,10 +311,9 @@ class OpenCodeAppViewProvider {
     const nonce = createNonce()
     const webDistDir = this.webDistDir()
     const html = fs.readFileSync(path.join(webDistDir, "index.html"), "utf8")
-    const assetBase = webview.asWebviewUri(vscode.Uri.file(path.join(webDistDir, "assets"))).toString() + "/"
     output.appendLine("[localAppHtml] appPath=" + JSON.stringify(this.appPath(options)) + " distDir=" + this.webDistDir())
     const routeScript = `<meta http-equiv="Content-Security-Policy" content="${localWebviewCsp(webview, nonce)}">
-    <script nonce="${nonce}">window.__opencodeVSCodeAssetBase = ${JSON.stringify(assetBase)}; window.__opencodeVSCodeAppPath = ${JSON.stringify(this.appPath(options))}; window.__opencodeVSCodeBackendUrl = ${JSON.stringify(this.backendUrl())}; window.__opencodeVSCodeStorageSnapshot = ${JSON.stringify(this.storageSnapshot())}; (function(){try{var s=window.__opencodeVSCodeStorageSnapshot||{};if(Object.keys(s).length){localStorage.clear();Object.keys(s).forEach(function(k){localStorage.setItem(k,String(s[k]))})}}catch(e){}})(); history.replaceState(history.state, "", ${JSON.stringify(this.appPath(options))})</script>`
+    <script nonce="${nonce}">history.replaceState(history.state, "", ${JSON.stringify(this.appPath(options))})</script>`
     return injectLocalSpriteSymbols(
       rewriteLocalAppHtml(html, webview, webDistDir, nonce).replace(/<head([^>]*)>/i, `<head$1>
     ${routeScript}`),
@@ -362,6 +351,15 @@ class OpenCodeAppViewProvider {
     this.broadcastStorage({ type: "replace", entries: next }, sourceWebview)
   }
 
+  storageGetAll(webview) {
+    const entries = this.storageSnapshot()
+    webview.postMessage({
+      source: "opencode-vscode-app",
+      command: "storagePatch",
+      patch: { type: "replace", entries },
+    })
+  }
+
   broadcastStorage(patch, sourceWebview) {
     for (const webview of this.webviews()) {
       if (webview === sourceWebview) continue
@@ -393,231 +391,6 @@ class OpenCodeAppViewProvider {
       requestId: message.requestId,
       result: uris ? uris.map((uri) => normalizeWorkspaceDir(uri.fsPath)) : null,
     })
-  }
-
-  cancelHttpProxy(message) {
-    const controller = this.httpProxyControllers.get(message.requestId)
-    if (!controller) return
-    controller.abort()
-    this.httpProxyControllers.delete(message.requestId)
-  }
-
-  async httpProxy(message, webview) {
-    const requestId = message.requestId
-    if (typeof requestId !== "string") return
-    const targetUrl = this.httpProxyUrl(message)
-    output.appendLine(`[httpProxy] ${message.method ?? "GET"} ${message.url} -> ${targetUrl}`)
-    const controller = new AbortController()
-    this.httpProxyControllers.set(requestId, controller)
-    try {
-      const response = await fetch(targetUrl, {
-        method: typeof message.method === "string" ? message.method : "GET",
-        headers: this.httpProxyHeaders(message.headers),
-        body: typeof message.body === "string" ? Buffer.from(message.body, "base64") : undefined,
-        signal: controller.signal,
-      })
-      output.appendLine(`[httpProxy] response ${response.status} ${response.statusText} ${targetUrl}`)
-      const body = Buffer.from(await response.arrayBuffer()).toString("base64")
-      await webview.postMessage({
-        source: "opencode-vscode-app",
-        command: "httpProxyResponse",
-        requestId,
-        status: response.status,
-        statusText: response.statusText,
-        headers: [...response.headers.entries()],
-        body,
-      })
-    } catch (error) {
-      if (controller.signal.aborted) return
-      output.appendLine(
-        `[httpProxy] error ${targetUrl}: ${error instanceof Error ? error.message : String(error)}`,
-      )
-      await webview.postMessage({
-        source: "opencode-vscode-app",
-        command: "httpProxyResponse",
-        requestId,
-        error: error instanceof Error ? error.message : String(error),
-      })
-    } finally {
-      this.httpProxyControllers.delete(requestId)
-    }
-  }
-
-  httpProxyUrl(message) {
-    if (typeof message.url !== "string") throw new Error("Missing proxy URL")
-    const url = new URL(message.url)
-    if (url.protocol !== "http:" && url.protocol !== "https:") throw new Error("Refusing non-HTTP proxy URL")
-    if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1") throw new Error("Refusing non-local proxy URL")
-    if (this.backendPort) {
-      url.protocol = "http:"
-      url.hostname = "127.0.0.1"
-      url.port = String(this.backendPort)
-    }
-    return url
-  }
-
-  httpProxyHeaders(headers) {
-    if (!Array.isArray(headers)) return undefined
-    return Object.fromEntries(
-      headers.filter((entry) => {
-        if (!Array.isArray(entry) || entry.length !== 2) return false
-        if (typeof entry[0] !== "string" || typeof entry[1] !== "string") return false
-        return !["connection", "content-length", "host", "keep-alive", "transfer-encoding"].includes(
-          entry[0].toLowerCase(),
-        )
-      }),
-    )
-  }
-
-  cancelSseProxy(message) {
-    const controller = this.sseProxyControllers.get(message.requestId)
-    if (!controller) return
-    controller.abort()
-    this.sseProxyControllers.delete(message.requestId)
-  }
-
-  async sseProxy(message, webview) {
-    const requestId = message.requestId
-    if (typeof requestId !== "string") return
-    const targetUrl = this.httpProxyUrl(message)
-    output.appendLine(`[sseProxy] ${message.method ?? "GET"} ${message.url} -> ${targetUrl}`)
-    const controller = new AbortController()
-    this.sseProxyControllers.set(requestId, controller)
-    try {
-      const response = await fetch(targetUrl, {
-        method: typeof message.method === "string" ? message.method : "GET",
-        headers: this.httpProxyHeaders(message.headers),
-        body: typeof message.body === "string" ? Buffer.from(message.body, "base64") : undefined,
-        signal: controller.signal,
-      })
-      output.appendLine(`[sseProxy] response ${response.status} ${response.statusText} ${targetUrl}`)
-      if (!response.ok || !response.body) {
-        throw new Error(`SSE proxy failed with ${response.status} ${response.statusText}`)
-      }
-      const reader = response.body.getReader()
-      while (true) {
-        const chunk = await reader.read()
-        if (chunk.done) break
-        await webview.postMessage({
-          source: "opencode-vscode-app",
-          command: "sseProxyChunk",
-          requestId,
-          body: Buffer.from(chunk.value).toString("base64"),
-        })
-      }
-      await webview.postMessage({
-        source: "opencode-vscode-app",
-        command: "sseProxyClose",
-        requestId,
-      })
-      output.appendLine(`[sseProxy] close ${targetUrl}`)
-    } catch (error) {
-      if (controller.signal.aborted) return
-      output.appendLine(
-        `[sseProxy] error ${targetUrl}: ${error instanceof Error ? error.message : String(error)}`,
-      )
-      await webview.postMessage({
-        source: "opencode-vscode-app",
-        command: "sseProxyError",
-        requestId,
-        error: error instanceof Error ? error.message : String(error),
-      })
-    } finally {
-      this.sseProxyControllers.delete(requestId)
-    }
-  }
-
-  webSocketProxy(message, webview) {
-    const requestId = message.requestId
-    if (typeof requestId !== "string") return
-    try {
-      if (typeof WebSocket !== "function") throw new Error("WebSocket is not available in the VS Code extension host")
-      const targetUrl = this.webSocketProxyUrl(message)
-      output.appendLine(`[webSocketProxy] ${message.url} -> ${targetUrl}`)
-      const socket = new WebSocket(targetUrl, normalizeWebSocketProtocols(message.protocols))
-      socket.binaryType = "arraybuffer"
-      this.webSocketProxySockets.set(requestId, socket)
-      socket.addEventListener("open", async () => {
-        output.appendLine(`[webSocketProxy] open ${targetUrl}`)
-        await webview.postMessage({
-          source: "opencode-vscode-app",
-          command: "webSocketProxyOpen",
-          requestId,
-        })
-      })
-      socket.addEventListener("message", async (event) => {
-        const payload = await webSocketMessagePayload(event.data)
-        await webview.postMessage({
-          source: "opencode-vscode-app",
-          command: "webSocketProxyMessage",
-          requestId,
-          ...payload,
-        })
-      })
-      socket.addEventListener("error", async () => {
-        output.appendLine(`[webSocketProxy] error ${targetUrl}`)
-        await webview.postMessage({
-          source: "opencode-vscode-app",
-          command: "webSocketProxyError",
-          requestId,
-        })
-      })
-      socket.addEventListener("close", async (event) => {
-        this.webSocketProxySockets.delete(requestId)
-        output.appendLine(
-          `[webSocketProxy] close ${targetUrl} code=${event.code} reason=${event.reason} clean=${event.wasClean}`,
-        )
-        await webview.postMessage({
-          source: "opencode-vscode-app",
-          command: "webSocketProxyClose",
-          requestId,
-          code: event.code,
-          reason: event.reason,
-          wasClean: event.wasClean,
-        })
-      })
-    } catch (error) {
-      webview.postMessage({
-        source: "opencode-vscode-app",
-        command: "webSocketProxyClose",
-        requestId,
-        code: 1011,
-        reason: error instanceof Error ? error.message : String(error),
-        wasClean: false,
-      })
-    }
-  }
-
-  sendWebSocketProxy(message) {
-    const socket = this.webSocketProxySockets.get(message.requestId)
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
-    if (message.binary) {
-      socket.send(Buffer.from(String(message.body ?? ""), "base64"))
-      return
-    }
-    socket.send(String(message.body ?? ""))
-  }
-
-  closeWebSocketProxy(message) {
-    const socket = this.webSocketProxySockets.get(message.requestId)
-    if (!socket) return
-    socket.close(typeof message.code === "number" ? message.code : undefined, typeof message.reason === "string" ? message.reason : undefined)
-  }
-
-  webSocketProxyUrl(message) {
-    if (typeof message.url !== "string") throw new Error("Missing proxy URL")
-    const url = new URL(message.url)
-    if (url.protocol !== "ws:" && url.protocol !== "wss:") throw new Error("Refusing non-WebSocket proxy URL")
-    if (url.hostname !== "localhost" && url.hostname !== "127.0.0.1") throw new Error("Refusing non-local proxy URL")
-    if (!url.pathname.startsWith("/pty/") || !url.pathname.endsWith("/connect")) {
-      throw new Error("Refusing unsupported WebSocket proxy URL")
-    }
-    if (this.backendPort) {
-      url.protocol = "ws:"
-      url.hostname = "127.0.0.1"
-      url.port = String(this.backendPort)
-    }
-    return url
   }
 
   errorHtml(error) {
@@ -892,24 +665,6 @@ function stopProcesses() {
     child.kill()
   }
   processes.clear()
-}
-
-function normalizeWebSocketProtocols(protocols) {
-  if (typeof protocols === "string") return protocols
-  if (!Array.isArray(protocols)) return undefined
-  return protocols.filter((protocol) => typeof protocol === "string")
-}
-
-async function webSocketMessagePayload(data) {
-  if (typeof data === "string") return { body: data, binary: false }
-  if (data instanceof ArrayBuffer) return { body: Buffer.from(data).toString("base64"), binary: true }
-  if (ArrayBuffer.isView(data)) {
-    return { body: Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString("base64"), binary: true }
-  }
-  if (data && typeof data.arrayBuffer === "function") {
-    return { body: Buffer.from(await data.arrayBuffer()).toString("base64"), binary: true }
-  }
-  return { body: Buffer.from(data ?? "").toString("base64"), binary: true }
 }
 
 function clearViteCache(buildDir) {
