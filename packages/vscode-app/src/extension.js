@@ -219,8 +219,7 @@ class OpenCodeAppViewProvider {
   }
 
   async reload() {
-    if (!this.view) return
-    this.view.webview.html = this.localAppHtml(this.view.webview)
+    await this.refresh()
   }
 
   async refresh() {
@@ -247,6 +246,10 @@ class OpenCodeAppViewProvider {
       this.view.webview.options = {
         enableScripts: true,
         localResourceRoots: this.localResourceRoots(),
+      }
+      if (vscode.workspace.getConfiguration("opencodeVscodeApp").get("manualMode", false) && !(await requestOpencodeHealthOk(backendUrl))) {
+        this.view.webview.html = this.manualModeHtml(manualModeCommand(this.context, vscode.workspace.getConfiguration("opencodeVscodeApp"), this.backendPort))
+        return
       }
       this.view.webview.html = this.localAppHtml(this.view.webview)
     } catch (error) {
@@ -412,6 +415,96 @@ class OpenCodeAppViewProvider {
   </body>
 </html>`
   }
+
+  manualModeHtml(command) {
+    const nonce = createNonce()
+    return `<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-${nonce}';">
+    <style>
+      body {
+        color: var(--vscode-foreground);
+        background: var(--vscode-editor-background);
+        font-family: var(--vscode-font-family);
+        margin: 0;
+        min-height: 100vh;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 16px;
+        box-sizing: border-box;
+      }
+      main {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        width: 100%;
+        max-width: 520px;
+        text-align: center;
+      }
+      .icon {
+        align-self: center;
+        width: 32px;
+        height: 32px;
+        border-radius: 50%;
+        display: grid;
+        place-items: center;
+        color: var(--vscode-notificationsWarningIcon-foreground);
+        background: var(--vscode-inputValidation-warningBackground);
+        font-weight: 600;
+      }
+      h2 {
+        margin: 0;
+        font-size: 14px;
+        font-weight: 600;
+      }
+      p {
+        margin: 0;
+        color: var(--vscode-descriptionForeground);
+        font-size: 12px;
+        line-height: 1.5;
+      }
+      pre {
+        margin: 0;
+        padding: 12px;
+        white-space: pre-wrap;
+        word-break: break-all;
+        text-align: left;
+        background: var(--vscode-textCodeBlock-background);
+        border-radius: 4px;
+        font-size: 12px;
+      }
+      button {
+        align-self: center;
+        color: var(--vscode-button-foreground);
+        background: var(--vscode-button-background);
+        border: 0;
+        border-radius: 3px;
+        padding: 6px 12px;
+        cursor: pointer;
+      }
+      button:hover {
+        background: var(--vscode-button-hoverBackground);
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="icon">!</div>
+      <h2>手动模式</h2>
+      <p>opencode 后端尚未启动。请在终端中运行以下命令。</p>
+      <pre>${escapeHtml(command)}</pre>
+      <button id="retry">Check Again</button>
+    </main>
+    <script nonce="${nonce}">
+      const vscode = acquireVsCodeApi()
+      document.getElementById("retry").addEventListener("click", () => vscode.postMessage({ command: "restart" }))
+    </script>
+  </body>
+</html>`
+  }
 }
 
 // A configured backendPort is authoritative. Use 0 to allocate and persist a random port.
@@ -433,6 +526,12 @@ async function ensureServices(context) {
   const workspaceDir = resolveWorkspaceDir(repoRoot ?? context.extensionPath)
   const buildDir = path.join(context.globalStorageUri.fsPath, "runtime")
   const config = vscode.workspace.getConfiguration("opencodeVscodeApp")
+  // 手动模式：跳过进程启动，webview 通过 postMessage 获取启动命令
+  if (config.get("manualMode", false)) {
+    const backendPort = await resolveBackendPort(context, config)
+    output.appendLine(`[opencode] manual mode — skipping backend start (port ${backendPort})`)
+    return { backend: backendPort, web: backendPort }
+  }
   const backendPort = await resolveBackendPort(context, config)
   const env = {
     ...process.env,
@@ -673,6 +772,14 @@ function findOnPath(command) {
   return result.stdout.split(/\r?\n/).find(Boolean) ?? ""
 }
 
+function manualModeCommand(context, config, backendPort) {
+  const binary = packagedBinaryPath(context.extensionPath)
+  if (binary) return `"${binary}" serve --port ${backendPort} --hostname 127.0.0.1`
+  const repoRoot = findRepoRoot(context.extensionPath)
+  const bun = resolveBun(config.get("bunPath", ""))
+  return `"${bun}" run --conditions=browser "${path.join(repoRoot, "packages", "opencode", "src", "index.ts")}" serve --port ${backendPort} --hostname 127.0.0.1`
+}
+
 function isPortOpen(port) {
   return new Promise((resolve) => {
     const socket = net.createConnection({ host: "127.0.0.1", port })
@@ -758,6 +865,31 @@ function requestWithoutAuthOk(url) {
     const request = http.request(url, { method: "HEAD", timeout: 1_000 }, (response) => {
       response.resume()
       resolve(response.statusCode >= 200 && response.statusCode < 400)
+    })
+    request.on("timeout", () => {
+      request.destroy()
+      resolve(false)
+    })
+    request.on("error", () => resolve(false))
+    request.end()
+  })
+}
+
+function requestOpencodeHealthOk(url) {
+  return new Promise((resolve) => {
+    const request = http.request(new URL("/global/health", url), { method: "GET", timeout: 1_000 }, (response) => {
+      let body = ""
+      response.setEncoding("utf8")
+      response.on("data", (chunk) => {
+        body += chunk
+      })
+      response.on("end", () => {
+        try {
+          resolve(response.statusCode >= 200 && response.statusCode < 300 && JSON.parse(body).healthy === true)
+        } catch {
+          resolve(false)
+        }
+      })
     })
     request.on("timeout", () => {
       request.destroy()
