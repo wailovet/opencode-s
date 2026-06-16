@@ -332,7 +332,10 @@ class OpenCodeAppViewProvider {
     const html = fs.readFileSync(path.join(webDistDir, "index.html"), "utf8")
     output.appendLine("[localAppHtml] appPath=" + JSON.stringify(this.appPath(options)) + " distDir=" + this.webDistDir())
     const routeScript = `<meta http-equiv="Content-Security-Policy" content="${localWebviewCsp(webview, nonce)}">
-    <script nonce="${nonce}">history.replaceState(history.state, "", ${JSON.stringify(this.appPath(options))})</script>`
+    <script nonce="${nonce}">
+      const opencodePath = ${JSON.stringify(this.appPath(options))}
+      history.replaceState(history.state, "", opencodePath + location.search)
+    </script>`
     return injectLocalSpriteSymbols(
       rewriteLocalAppHtml(html, webview, webDistDir, nonce).replace(/<head([^>]*)>/i, `<head$1>
     ${routeScript}`),
