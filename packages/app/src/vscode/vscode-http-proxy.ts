@@ -178,12 +178,14 @@ export class VSCodeHttpProxy {
   private static async proxyFetch(input: RequestInfo | URL, init?: RequestInit) {
     const request = new Request(input, init)
     const requestId = this.createRequestId()
+    const startedAt = Date.now()
+    const ms = () => `${Date.now() - startedAt}ms`
     console.log(`[proxyHTTP] proxyFetch ${requestId} enter ${request.method} ${request.url}`)
 
     if (request.signal.aborted) throw this.abortError()
 
     const payload = await this.proxyRequestPayload(request)
-    console.log(`[proxyHTTP] send ${requestId} ${request.method} ${payload.url}`)
+    console.log(`[proxyHTTP] send ${requestId} ${request.method} ${payload.url} payloadReady=${ms()}`)
     this.postMessage({
       source: "opencode-vscode-app",
       command: "proxyFetch",
@@ -196,6 +198,9 @@ export class VSCodeHttpProxy {
       let streamStarted = false
       let settled = false
       let pendingChunks: Array<{ body: string }> = []
+      let totalBytes = 0
+      let chunkCount = 0
+      let metaAt = 0
 
       const cleanup = () => {
         window.removeEventListener("message", onMessage)
@@ -219,7 +224,7 @@ export class VSCodeHttpProxy {
       const timeoutId = setTimeout(() => {
         if (settled) return
         settled = true
-        console.log(`[proxyHTTP] timeout ${requestId} ${request.url}`)
+        console.log(`[proxyHTTP] timeout ${requestId} ${request.url} at=${ms()}`)
         this.postMessage({
           source: "opencode-vscode-app",
           command: "proxyCancel",
@@ -237,7 +242,8 @@ export class VSCodeHttpProxy {
 
         if (msg.command === "proxyMeta" && !streamStarted) {
           streamStarted = true
-          console.log(`[proxyHTTP] meta ${requestId} ${msg.status} ${msg.statusText}`)
+          metaAt = Date.now() - startedAt
+          console.log(`[proxyHTTP] meta ${requestId} ${msg.status} ${msg.statusText} ttfb=${metaAt}ms`)
           const stream = new ReadableStream<Uint8Array>({
             start(c) { controller = c },
             cancel() {
@@ -254,7 +260,10 @@ export class VSCodeHttpProxy {
             headers: msg.headers,
           }))
           for (const chunk of pendingChunks) {
-            controller!.enqueue(VSCodeHttpProxy.base64ToUint8Array(String(chunk.body ?? "")))
+            const bytes = VSCodeHttpProxy.base64ToUint8Array(String(chunk.body ?? ""))
+            totalBytes += bytes.byteLength
+            chunkCount += 1
+            controller!.enqueue(bytes)
           }
           pendingChunks = []
           return
@@ -262,7 +271,10 @@ export class VSCodeHttpProxy {
 
         if (msg.command === "proxyChunk") {
           if (controller) {
-            controller.enqueue(VSCodeHttpProxy.base64ToUint8Array(String(msg.body ?? "")))
+            const bytes = VSCodeHttpProxy.base64ToUint8Array(String(msg.body ?? ""))
+            totalBytes += bytes.byteLength
+            chunkCount += 1
+            controller.enqueue(bytes)
           } else {
             pendingChunks.push({ body: msg.body })
           }
@@ -272,7 +284,9 @@ export class VSCodeHttpProxy {
         if (msg.command === "proxyClose") {
           settled = true
           cleanup()
-          console.log(`[proxyHTTP] close ${requestId}`)
+          console.log(
+            `[proxyHTTP] close ${requestId} total=${ms()} ttfb=${metaAt}ms body=${totalBytes}B chunks=${chunkCount}`,
+          )
           if (controller) controller.close()
           return
         }
@@ -281,7 +295,7 @@ export class VSCodeHttpProxy {
           settled = true
           cleanup()
           const errMsg = String(msg.error ?? "VS Code proxy failed")
-          console.log(`[proxyHTTP] error ${requestId} ${errMsg}`)
+          console.log(`[proxyHTTP] error ${requestId} ${errMsg} at=${ms()}`)
           const proxyErr = new Error(errMsg)
           if (controller) controller.error(proxyErr)
           else reject(proxyErr)

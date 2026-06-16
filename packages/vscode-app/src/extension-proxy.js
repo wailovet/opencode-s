@@ -65,6 +65,25 @@ class ExtensionHttpProxyBridge {
     this.baseUrl = ""
   }
 
+  /**
+   * 统一的代理日志，对齐后端（opencode）的输出格式，便于在同一 Output Channel 中对照查看：
+   *
+   *   [Extension Host] [2026-06-15T17:22:02.552Z] [info] [httpProxy] [a8e4f2] GET -> http://127.0.0.1:12377/global/config
+   *
+   * @param {"httpProxy" | "wsProxy"} tag
+   * @param {string} trace - 短 trace id（requestId 前 8 位），串联同一次请求的多条日志
+   * @param {string} message
+   */
+  trace(tag, trace, message) {
+    const ts = new Date().toISOString()
+    this.log.appendLine(`[Extension Host] [${ts}] [info] [${tag}] [${trace}] ${message}`)
+  }
+
+  /** 从 requestId 取前 8 位作为短 trace id，方便日志串联。 */
+  shortId(requestId) {
+    return typeof requestId === "string" ? requestId.slice(0, 8) : "????????"
+  }
+
   // ── 统一 HTTP/SSE 代理 ────────────────────────────
 
   /**
@@ -97,17 +116,27 @@ class ExtensionHttpProxyBridge {
     const requestId = message.requestId
     if (typeof requestId !== "string") return
     const targetUrl = this.resolveUrl(message.url, "http")
-    this.log.appendLine(`[proxyFetch] ${message.method ?? "GET"} ${message.url} -> ${targetUrl}`)
+    const trace = this.shortId(requestId)
+    const method = typeof message.method === "string" ? message.method : "GET"
+    const startedAt = Date.now()
+    const ms = () => Date.now() - startedAt
+    this.trace("httpProxy", trace, `${method} ${message.url} -> ${targetUrl}`)
     const controller = new AbortController()
     this.activeControllers.set(requestId, controller)
+    let totalBytes = 0
+    let chunkCount = 0
     try {
       const response = await fetch(targetUrl, {
-        method: typeof message.method === "string" ? message.method : "GET",
+        method,
         headers: this.cleanHeaders(message.headers),
         body: typeof message.body === "string" ? Buffer.from(message.body, "base64") : undefined,
         signal: controller.signal,
       })
-      this.log.appendLine(`[proxyFetch] response ${response.status} ${response.statusText} ${targetUrl}`)
+      this.trace(
+        "httpProxy",
+        trace,
+        `response ${response.status} ${response.statusText} <- ${targetUrl} ttfb=${ms()}ms`,
+      )
 
       // 先发响应元数据
       await webview.postMessage({
@@ -125,6 +154,8 @@ class ExtensionHttpProxyBridge {
         while (true) {
           const chunk = await reader.read()
           if (chunk.done) break
+          totalBytes += chunk.value?.length ?? 0
+          chunkCount += 1
           await webview.postMessage({
             source: "opencode-vscode-app",
             command: "proxyChunk",
@@ -139,11 +170,17 @@ class ExtensionHttpProxyBridge {
         command: "proxyClose",
         requestId,
       })
-      this.log.appendLine(`[proxyFetch] close ${targetUrl}`)
+      this.trace(
+        "httpProxy",
+        trace,
+        `close ${targetUrl} total=${ms()}ms bytes=${totalBytes} chunks=${chunkCount}`,
+      )
     } catch (error) {
       if (controller.signal.aborted) return
-      this.log.appendLine(
-        `[proxyFetch] error ${targetUrl}: ${error instanceof Error ? error.message : String(error)}`,
+      this.trace(
+        "httpProxy",
+        trace,
+        `error ${targetUrl} after=${ms()}ms: ${error instanceof Error ? error.message : String(error)}`,
       )
       try {
         await webview.postMessage({
@@ -183,7 +220,7 @@ class ExtensionHttpProxyBridge {
     }
     if (url.protocol !== "vscode-webview:") return urlString
     const rewritten = `${this.baseUrl.replace(/\/+$/, "")}${url.pathname}${url.search}${url.hash}`
-    this.log.appendLine(`[rewriteWebview] ${urlString} -> ${rewritten}`)
+    this.trace("rewriteWebview", "rewrite", `${urlString} -> ${rewritten}`)
     return rewritten
   }
 
