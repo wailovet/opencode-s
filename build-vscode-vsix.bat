@@ -8,8 +8,8 @@ set "OPENCODE_DIR=%ROOT%packages\opencode"
 set "OUT_DIR=%ROOT%build\vscode-vsix"
 set "STAGE_DIR=%OUT_DIR%\staging"
 set "VSIX_FILE=%OUT_DIR%\opencode-vscode-app.vsix"
-set "OPENCODE_DIST_DIR=%OUT_DIR%\opencode-dist"
-set "OPENCODE_EXE=%OPENCODE_DIST_DIR%\opencode-windows-x64\bin\opencode.exe"
+rem build.ts --single hardcodes its output to packages\opencode\dist\opencode-windows-x64\bin\opencode(.exe)
+set "OPENCODE_EXE=%OPENCODE_DIR%\dist\opencode-windows-x64\bin\opencode.exe"
 set "SKIP_VSIX=0"
 
 :parse_args
@@ -80,7 +80,7 @@ if "%SKIP_OPENCODE%"=="1" if exist "%OPENCODE_EXE%" (
   echo       Skipping opencode build ^(existing binary detected^).
   goto :opencode_done
 )
-if exist "%OPENCODE_DIST_DIR%" rmdir /s /q "%OPENCODE_DIST_DIR%"
+if exist "%OPENCODE_DIR%\dist" rmdir /s /q "%OPENCODE_DIR%\dist"
 if errorlevel 1 exit /b 1
 
 call bun run "%OPENCODE_DIR%\script\build.ts" --single
