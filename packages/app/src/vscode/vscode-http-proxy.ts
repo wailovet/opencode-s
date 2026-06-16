@@ -311,6 +311,15 @@ export class VSCodeHttpProxy {
     return {
       url: request.url,
       method: request.method,
+      // 网页来源引用地址：Extension Host 默认拿不到 webview 的 location，
+      // 这里把当前页面的 origin 传过去（去掉 path），用于后端同源改写判断
+      origin: (() => {
+        try {
+          return new URL(window.location.href).origin
+        } catch {
+          return window.location.origin
+        }
+      })(),
       headers: [...request.headers.entries()],
       body:
         request.method === "GET" || request.method === "HEAD"

@@ -115,7 +115,7 @@ class ExtensionHttpProxyBridge {
   async proxyFetch(message, webview) {
     const requestId = message.requestId
     if (typeof requestId !== "string") return
-    const targetUrl = this.resolveUrl(message.url, "http")
+    const targetUrl = this.resolveUrl(message.url, "http", message.origin)
     const trace = this.shortId(requestId)
     const method = typeof message.method === "string" ? message.method : "GET"
     const startedAt = Date.now()
@@ -207,9 +207,14 @@ class ExtensionHttpProxyBridge {
    *   vscode-webview://xxx/global/config?a=1
    *     -> http://127.0.0.1:12377/global/config?a=1
    *
-   * 非 vscode-webview 协议、或 baseUrl 未配置时原样返回。
+   * 改写触发条件（满足任一）：
+   *   1. 请求协议为 vscode-webview:
+   *   2. 请求 origin 与前端传来的来源 origin（webview 页面地址）一致 —— 即同源请求
+   *
+   * @param {string} urlString - 请求 URL
+   * @param {string} [referrerOrigin] - 前端传来的 webview 页面 origin（已去掉 path）
    */
-  rewriteWebviewUrl(urlString) {
+  rewriteWebviewUrl(urlString, referrerOrigin) {
     if (typeof urlString !== "string") return urlString
     if (!this.baseUrl) return urlString
     let url
@@ -218,7 +223,23 @@ class ExtensionHttpProxyBridge {
     } catch {
       return urlString
     }
-    if (url.protocol !== "vscode-webview:") return urlString
+
+    const requestOrigin = `${url.protocol}//${url.host}`
+    const isWebviewProto = url.protocol === "vscode-webview:"
+    // 来源 origin 与请求 origin 完全一致视为同源
+    const isSameOrigin =
+      typeof referrerOrigin === "string" &&
+      referrerOrigin.length > 0 &&
+      referrerOrigin === requestOrigin
+
+    this.trace(
+      "rewriteWebview",
+      "rewrite",
+      `url=${urlString} requestOrigin=${requestOrigin} referrerOrigin=${referrerOrigin ?? "<none>"} ` +
+        `isWebviewProto=${isWebviewProto} isSameOrigin=${isSameOrigin}`,
+    )
+
+    if (!isWebviewProto && !isSameOrigin) return urlString
     const rewritten = `${this.baseUrl.replace(/\/+$/, "")}${url.pathname}${url.search}${url.hash}`
     this.trace("rewriteWebview", "rewrite", `${urlString} -> ${rewritten}`)
     return rewritten
@@ -228,13 +249,17 @@ class ExtensionHttpProxyBridge {
    * 解析并验证请求 URL。
    *
    * 流程：
-   *   1. 先用 rewriteWebviewUrl 把 vscode-webview:// 改写为后端地址
+   *   1. 先用 rewriteWebviewUrl 把 vscode-webview:// 或同源请求改写为后端地址
    *   2. 再做安全检查（仅允许 http/https/ws/wss + localhost/127.0.0.1）
    *
    * 改写后的 URL 已经是 http://127.0.0.1:...，会自然通过校验。
+   *
+   * @param {string} urlString - 请求 URL
+   * @param {"http" | "ws"} expectedProtocol
+   * @param {string} [referrerOrigin] - 前端传来的 webview 页面 origin
    */
-  resolveUrl(urlString, expectedProtocol) {
-    const rewritten = this.rewriteWebviewUrl(urlString)
+  resolveUrl(urlString, expectedProtocol, referrerOrigin) {
+    const rewritten = this.rewriteWebviewUrl(urlString, referrerOrigin)
     if (typeof rewritten !== "string") throw new Error("Missing proxy URL")
     const url = new URL(rewritten)
 
