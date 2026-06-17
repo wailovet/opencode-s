@@ -216,10 +216,30 @@ class OpenCodeAppViewProvider {
     if (message.command === "openNewSessionPanel") {
       await openNewSessionPanel(this, message.sessionDir, webview)
     }
+    if (message.command === "startManualModeBackend") {
+      await this.startManualModeBackend()
+    }
   }
 
   async reload() {
     await this.refresh()
+  }
+
+  async startManualModeBackend() {
+    try {
+      const config = vscode.workspace.getConfiguration("opencodeVscodeApp")
+      const backendPort = await resolveBackendPort(this.context, config)
+      const backendUrl = `http://127.0.0.1:${backendPort}`
+      if (await requestOpencodeHealthOk(backendUrl)) {
+        await this.refresh()
+        return
+      }
+      launchManualModeBackend(this.context, config, backendPort)
+      vscode.window.showInformationMessage("已在 cmd.exe 中启动 opencode 服务端")
+    } catch (error) {
+      output.appendLine(`[manualMode] failed to launch cmd.exe: ${error.message}`)
+      vscode.window.showErrorMessage(`无法启动 cmd.exe: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   async refresh() {
@@ -491,6 +511,12 @@ class OpenCodeAppViewProvider {
       button:hover {
         background: var(--vscode-button-hoverBackground);
       }
+      .actions {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 8px;
+      }
     </style>
   </head>
   <body>
@@ -499,11 +525,15 @@ class OpenCodeAppViewProvider {
       <h2>手动模式</h2>
       <p>opencode 后端尚未启动。请在终端中运行以下命令。</p>
       <pre>${escapeHtml(command)}</pre>
-      <button id="retry">Check Again</button>
+      <div class="actions">
+        <button id="retry">Check Again</button>
+        <button id="start">使用cmd.exe启动服务端</button>
+      </div>
     </main>
     <script nonce="${nonce}">
       const vscode = acquireVsCodeApi()
       document.getElementById("retry").addEventListener("click", () => vscode.postMessage({ command: "restart" }))
+      document.getElementById("start").addEventListener("click", () => vscode.postMessage({ command: "startManualModeBackend" }))
     </script>
   </body>
 </html>`
@@ -781,6 +811,27 @@ function manualModeCommand(context, config, backendPort) {
   const repoRoot = findRepoRoot(context.extensionPath)
   const bun = resolveBun(config.get("bunPath", ""))
   return `"${bun}" run --conditions=browser "${path.join(repoRoot, "packages", "opencode", "src", "index.ts")}" serve --port ${backendPort} --hostname 127.0.0.1`
+}
+
+function launchManualModeBackend(context, config, backendPort) {
+  if (process.platform !== "win32") {
+    throw new Error("cmd.exe launch is only supported on Windows")
+  }
+  const cwd = resolveWorkspaceDir(context.extensionPath)
+  const command = `start "" /D "${cwd}" cmd.exe /d /k "${manualModeCommand(context, config, backendPort)}"`
+  const child = childProcess.spawn(
+    "cmd.exe",
+    ["/d", "/c", command],
+    {
+      cwd,
+      detached: true,
+      stdio: "ignore",
+      windowsHide: false,
+      windowsVerbatimArguments: true,
+    },
+  )
+  child.unref()
+  output.appendLine(`[manualMode] launched detached cmd.exe for backend port ${backendPort}`)
 }
 
 function isPortOpen(port) {
