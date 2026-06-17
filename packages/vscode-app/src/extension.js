@@ -314,7 +314,7 @@ class OpenCodeAppViewProvider {
     // 侧边栏默认展示当前工作目录的 sessions 列表
     const workspaceDir = normalizeWorkspaceDir(resolveWorkspaceDir(this.context.extensionPath))
     if (!workspaceDir) return "/"
-    return "/" + encode(workspaceDir) + "/vscode-sessions"
+    return "/" + encode(workspaceDir) + "/vscode-sessions-list"
   }
 
   webDistDir() {

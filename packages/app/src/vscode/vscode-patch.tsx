@@ -1,6 +1,6 @@
 import { DialogSettings } from "@/components/settings-v2"
 import { Dialog as Kobalte } from "@kobalte/core/dialog"
-import { Route, useLocation, useNavigate, useParams } from "@solidjs/router"
+import { Route, StaticRouter, useLocation, useNavigate, useParams } from "@solidjs/router"
 import type { ParentProps } from "solid-js"
 import { createEffect, createMemo, onCleanup, onMount, Show } from "solid-js"
 import VSCodeSessionPage from "./vscode-session"
@@ -43,10 +43,6 @@ function installVSCodeChromeStyle() {
   const style = document.createElement("style")
   style.id = "opencode-vscode-chrome-style"
   style.textContent = `
-    body.vscode-session-open header.shrink-0.relative.flex.flex-row.h-9.bg-v2-background-bg-deep {
-      display: none !important;
-    }
-
     body.vscode-session-open aside[aria-label="Development performance diagnostics"],
     body.vscode-session-open [aria-label="Development performance diagnostics"] {
       display: none !important;
@@ -209,8 +205,27 @@ export function PatchedRouteGate(props: ParentProps) {
   const component = () => {
     if (location.pathname.includes("/settings")) return VSCodeSettingsPage
   }
+  const vscodePath = () => {
+    if (!location.pathname.includes("/vscode-sessions-list") && !location.pathname.includes("/vscode-session")) return
+    return `${location.pathname}${location.search}${location.hash}`
+  }
+
   return (
-    <Show when={component()} keyed fallback={props.children}>
+    <Show
+      when={component()}
+      keyed
+      fallback={
+        <Show
+          when={vscodePath()}
+          keyed
+          fallback={props.children}
+        >
+          {(url) => <StaticRouter url={url}>
+            <PatchedRoutes />
+          </StaticRouter>}
+        </Show>
+      }
+    >
       {(Component) => <Component />}
     </Show>
   )
@@ -271,7 +286,7 @@ export function PatchedRoutes() {
   return (
     <>
       <Route path="/settings" component={VSCodeSettingsPage} />
-      <Route path="/:dir/vscode-sessions" component={VSCodeSessionsListProviders} />
+      <Route path="/:dir/vscode-sessions-list" component={VSCodeSessionsListProviders} />
       <Route path="/:dir/vscode-session/:id?" component={VSCodeSessionProviders} />
     </>
   )
