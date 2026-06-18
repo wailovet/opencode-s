@@ -8,6 +8,7 @@ import {
   For,
   Show,
   onCleanup,
+  onMount,
   createMemo,
   createSignal,
   createResource,
@@ -53,7 +54,6 @@ import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
-import { useServerSync } from "@/context/server-sync"
 import { serverAttachmentFile } from "@/components/prompt-input/server-attachment"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionTabs } from "@/pages/session/helpers"
@@ -85,6 +85,15 @@ import { pathKey } from "@/utils/path-key"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { displayName } from "@/pages/layout/helpers"
 import { VSCodeFiSettings } from "./vscode-fi-settings"
+import {
+  FI_ANALYSIS_IMPLEMENTATION_DEFAULT,
+  type FiCurrentState,
+  type FiPluginConfig,
+  fiAnalysisImplementationEnabled,
+  fiPluginConfigWithEnabled,
+  getVSCodeFiConfig,
+  updateVSCodeFiConfig,
+} from "./vscode-fi-config"
 
 interface PromptInputProps {
   class?: string
@@ -128,60 +137,10 @@ const EXAMPLES = [
   "prompt.example.25",
 ] as const
 
-type FiCurrentState = "analysis" | "default"
-type FiPluginEntry = string | [string, Record<string, unknown>]
-
-const FI_ANALYSIS_IMPLEMENTATION_DEFAULT = "/fi-analysis-implementation-default"
-const FI_PLUGIN_NAME = "opencode-fi-plugin"
-const FI_MODE_KEY = "analysis-implementation"
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return !!value && typeof value === "object" && !Array.isArray(value)
-}
-
-function fiPluginSpec(entry: FiPluginEntry) {
-  return typeof entry === "string" ? entry : entry[0]
-}
-
-function fiPluginOptions(entry: FiPluginEntry) {
-  return typeof entry === "string" ? {} : entry[1]
-}
-
-function isFiPluginEntry(entry: FiPluginEntry) {
-  return fiPluginSpec(entry).includes(FI_PLUGIN_NAME)
-}
-
-function fiPluginEnabled(entry: FiPluginEntry) {
-  const options = fiPluginOptions(entry)
-  const workflows = isRecord(options.workflows) ? options.workflows : undefined
-  const workflow = workflows?.[FI_MODE_KEY]
-  if (workflow === false) return false
-  if (isRecord(workflow) && workflow.enabled === false) return false
-  return options.enabled !== false
-}
-
-function fiPluginEntryWithEnabled(entry: FiPluginEntry, enabled: boolean): FiPluginEntry {
-  const options = fiPluginOptions(entry)
-  const workflows = isRecord(options.workflows) ? options.workflows : {}
-  const current = workflows[FI_MODE_KEY]
-  const nextWorkflow = enabled ? { ...(isRecord(current) ? current : {}), enabled: true } : false
-  return [
-    fiPluginSpec(entry),
-    {
-      ...options,
-      workflows: {
-        ...workflows,
-        [FI_MODE_KEY]: nextWorkflow,
-      },
-    },
-  ]
-}
-
 export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
   const navigate = useNavigate()
   const queryOptions = useQueryOptions()
-  const serverSync = useServerSync()
 
   const sync = useSync()
   const local = useLocal()
@@ -1226,28 +1185,37 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
   })
   const [fiEnabled, setFiEnabled] = createSignal(true)
   const [fiCurrentState, setFiCurrentState] = createSignal<FiCurrentState>("default")
+  const [fiConfig, setFiConfig] = createSignal<FiPluginConfig>({})
 
-  const configuredFiPlugin = createMemo(() => (serverSync.data.config.plugin ?? []).find(isFiPluginEntry))
-
-  createEffect(() => {
-    const entry = configuredFiPlugin()
-    setFiEnabled(entry ? fiPluginEnabled(entry) : false)
+  onMount(() => {
+    void getVSCodeFiConfig()
+      .then((config) => {
+        setFiConfig(config)
+        setFiEnabled(fiAnalysisImplementationEnabled(config))
+      })
+      .catch((err) => {
+        showToast({
+          title: "FI 配置加载失败",
+          description: err instanceof Error ? err.message : String(err),
+        })
+      })
   })
 
   const toggleFiAnalysisImplementation = (enabled: boolean) => {
-    const plugins = serverSync.data.config.plugin ?? []
-    const entry = plugins.find(isFiPluginEntry)
     const previous = fiEnabled()
+    const previousConfig = fiConfig()
+    const nextConfig = fiPluginConfigWithEnabled(previousConfig, enabled)
     setFiEnabled(enabled)
+    setFiConfig(nextConfig)
     setFiCurrentState("default")
-    void serverSync
-      .updateConfig({
-        plugin: entry
-          ? plugins.map((item) => (item === entry ? fiPluginEntryWithEnabled(item, enabled) : item))
-          : [...plugins, fiPluginEntryWithEnabled(FI_PLUGIN_NAME, enabled)],
+    void updateVSCodeFiConfig(nextConfig)
+      .then((config) => {
+        setFiConfig(config)
+        setFiEnabled(fiAnalysisImplementationEnabled(config))
       })
       .catch((err) => {
         setFiEnabled(previous)
+        setFiConfig(previousConfig)
         showToast({
           title: "FI 配置更新失败",
           description: err instanceof Error ? err.message : String(err),
@@ -1292,8 +1260,8 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
   const openFiSettings = () => {
     dialog.show(() => (
       <VSCodeFiSettings
-        enabled={fiEnabled()}
-        disabled={store.mode !== "normal" || working()}
+        enabled={fiEnabled}
+        disabled={() => store.mode !== "normal" || working()}
         onEnabledChange={toggleFiAnalysisImplementation}
       />
     ))

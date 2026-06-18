@@ -2,6 +2,7 @@ const childProcess = require("child_process")
 const fs = require("fs")
 const http = require("http")
 const net = require("net")
+const os = require("os")
 const path = require("path")
 const vscode = require("vscode")
 const { ExtensionHttpProxyBridge } = require("./extension-proxy")
@@ -195,6 +196,12 @@ class OpenCodeAppViewProvider {
     if (message.command === "storageGetAll") {
       this.storage.handleGetAll(webview)
     }
+    if (message.command === "fiConfigGet") {
+      await this.handleFiConfigGet(message, webview)
+    }
+    if (message.command === "fiConfigUpdate") {
+      await this.handleFiConfigUpdate(message, webview)
+    }
     if (message.command === "proxyFetch") {
       await this.proxy.proxyFetch(message, webview)
     }
@@ -223,6 +230,24 @@ class OpenCodeAppViewProvider {
 
   async reload() {
     await this.refresh()
+  }
+
+  async handleFiConfigGet(message, webview) {
+    try {
+      await postFiConfigResult(webview, message.requestId, await readFiConfig())
+    } catch (error) {
+      await postFiConfigResult(webview, message.requestId, undefined, error)
+    }
+  }
+
+  async handleFiConfigUpdate(message, webview) {
+    try {
+      const config = isRecord(message.config) ? message.config : {}
+      await writeFiConfig(config)
+      await postFiConfigResult(webview, message.requestId, config)
+    } catch (error) {
+      await postFiConfigResult(webview, message.requestId, undefined, error)
+    }
   }
 
   async startManualModeBackend() {
@@ -767,6 +792,73 @@ function stopProcesses() {
     child.kill()
   }
   processes.clear()
+}
+
+function fiConfigFile() {
+  return path.join(os.homedir(), ".opencode-fi-plugin-config", "opencode-fi-plugin.jsonc")
+}
+
+function isRecord(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function stripJsonComments(text) {
+  let output = ""
+  let inString = false
+  let escaped = false
+  for (let index = 0; index < text.length; index++) {
+    const char = text[index]
+    const next = text[index + 1]
+    if (inString) {
+      output += char
+      if (escaped) escaped = false
+      else if (char === "\\") escaped = true
+      else if (char === "\"") inString = false
+      continue
+    }
+    if (char === "\"") {
+      inString = true
+      output += char
+      continue
+    }
+    if (char === "/" && next === "/") {
+      while (index < text.length && text[index] !== "\n") index++
+      output += "\n"
+      continue
+    }
+    if (char === "/" && next === "*") {
+      index += 2
+      while (index < text.length && !(text[index] === "*" && text[index + 1] === "/")) index++
+      index++
+      continue
+    }
+    output += char
+  }
+  return output.replace(/,\s*([}\]])/g, "$1")
+}
+
+async function readFiConfig() {
+  const file = fiConfigFile()
+  if (!fs.existsSync(file)) return {}
+  const text = await fs.promises.readFile(file, "utf8")
+  if (!text.trim()) return {}
+  return JSON.parse(stripJsonComments(text))
+}
+
+async function writeFiConfig(config) {
+  const file = fiConfigFile()
+  await fs.promises.mkdir(path.dirname(file), { recursive: true })
+  await fs.promises.writeFile(file, `${JSON.stringify(config, null, 2)}\n`, "utf8")
+}
+
+async function postFiConfigResult(webview, requestId, config, error) {
+  await webview?.postMessage({
+    source: "opencode-vscode-app",
+    command: "fiConfigResult",
+    requestId,
+    config: config ?? {},
+    error: error ? error instanceof Error ? error.message : String(error) : undefined,
+  })
 }
 
 function clearViteCache(buildDir) {
