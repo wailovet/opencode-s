@@ -53,6 +53,7 @@ import { usePermission } from "@/context/permission"
 import { useLanguage } from "@/context/language"
 import { usePlatform } from "@/context/platform"
 import { useSettings } from "@/context/settings"
+import { useServerSync } from "@/context/server-sync"
 import { serverAttachmentFile } from "@/components/prompt-input/server-attachment"
 import { useSessionLayout } from "@/pages/session/session-layout"
 import { createSessionTabs } from "@/pages/session/helpers"
@@ -83,6 +84,7 @@ import { useQueryOptions } from "@/context/server-sync"
 import { pathKey } from "@/utils/path-key"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { displayName } from "@/pages/layout/helpers"
+import { VSCodeFiSettings } from "./vscode-fi-settings"
 
 interface PromptInputProps {
   class?: string
@@ -126,10 +128,60 @@ const EXAMPLES = [
   "prompt.example.25",
 ] as const
 
+type FiCurrentState = "analysis" | "default"
+type FiPluginEntry = string | [string, Record<string, unknown>]
+
+const FI_ANALYSIS_IMPLEMENTATION_DEFAULT = "/fi-analysis-implementation-default"
+const FI_PLUGIN_NAME = "opencode-fi-plugin"
+const FI_MODE_KEY = "analysis-implementation"
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value)
+}
+
+function fiPluginSpec(entry: FiPluginEntry) {
+  return typeof entry === "string" ? entry : entry[0]
+}
+
+function fiPluginOptions(entry: FiPluginEntry) {
+  return typeof entry === "string" ? {} : entry[1]
+}
+
+function isFiPluginEntry(entry: FiPluginEntry) {
+  return fiPluginSpec(entry).includes(FI_PLUGIN_NAME)
+}
+
+function fiPluginEnabled(entry: FiPluginEntry) {
+  const options = fiPluginOptions(entry)
+  const workflows = isRecord(options.workflows) ? options.workflows : undefined
+  const workflow = workflows?.[FI_MODE_KEY]
+  if (workflow === false) return false
+  if (isRecord(workflow) && workflow.enabled === false) return false
+  return options.enabled !== false
+}
+
+function fiPluginEntryWithEnabled(entry: FiPluginEntry, enabled: boolean): FiPluginEntry {
+  const options = fiPluginOptions(entry)
+  const workflows = isRecord(options.workflows) ? options.workflows : {}
+  const current = workflows[FI_MODE_KEY]
+  const nextWorkflow = enabled ? { ...(isRecord(current) ? current : {}), enabled: true } : false
+  return [
+    fiPluginSpec(entry),
+    {
+      ...options,
+      workflows: {
+        ...workflows,
+        [FI_MODE_KEY]: nextWorkflow,
+      },
+    },
+  ]
+}
+
 export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
   const sdk = useSDK()
   const navigate = useNavigate()
   const queryOptions = useQueryOptions()
+  const serverSync = useServerSync()
 
   const sync = useSync()
   const local = useLocal()
@@ -1172,6 +1224,113 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
     onAbort: props.onAbort,
     onSubmit: props.onSubmit,
   })
+  const [fiEnabled, setFiEnabled] = createSignal(true)
+  const [fiCurrentState, setFiCurrentState] = createSignal<FiCurrentState>("default")
+
+  const configuredFiPlugin = createMemo(() => (serverSync.data.config.plugin ?? []).find(isFiPluginEntry))
+
+  createEffect(() => {
+    const entry = configuredFiPlugin()
+    setFiEnabled(entry ? fiPluginEnabled(entry) : false)
+  })
+
+  const toggleFiAnalysisImplementation = (enabled: boolean) => {
+    const plugins = serverSync.data.config.plugin ?? []
+    const entry = plugins.find(isFiPluginEntry)
+    const previous = fiEnabled()
+    setFiEnabled(enabled)
+    setFiCurrentState("default")
+    void serverSync
+      .updateConfig({
+        plugin: entry
+          ? plugins.map((item) => (item === entry ? fiPluginEntryWithEnabled(item, enabled) : item))
+          : [...plugins, fiPluginEntryWithEnabled(FI_PLUGIN_NAME, enabled)],
+      })
+      .catch((err) => {
+        setFiEnabled(previous)
+        showToast({
+          title: "FI 配置更新失败",
+          description: err instanceof Error ? err.message : String(err),
+        })
+      })
+  }
+
+  const handlePromptSubmit = (event: Event) => {
+    const shouldEnterAnalysis = fiEnabled() && store.mode === "normal" && !blank() && !working()
+    void handleSubmit(event).then(() => {
+      if (shouldEnterAnalysis) setFiCurrentState("analysis")
+    })
+  }
+
+  const submitWithFiDefault = () => {
+    if (store.mode !== "normal" || working() || blank()) return
+    const current = prompt.current()
+    const firstText = current.findIndex((part) => part.type === "text")
+    const next =
+      firstText === -1
+        ? [
+            {
+              type: "text" as const,
+              content: `${FI_ANALYSIS_IMPLEMENTATION_DEFAULT}\n`,
+              start: 0,
+              end: FI_ANALYSIS_IMPLEMENTATION_DEFAULT.length + 1,
+            },
+            ...current,
+          ]
+        : current.map((part, index) => {
+            if (index !== firstText || part.type !== "text") return part
+            const content = `${FI_ANALYSIS_IMPLEMENTATION_DEFAULT}\n${part.content}`
+            return { ...part, content, start: 0, end: content.length }
+          })
+    prompt.set(next, promptLength(next))
+    setFiCurrentState("default")
+    void handleSubmit(new Event("submit"))
+  }
+
+  const canSubmitWithFiDefault = () => fiEnabled() && fiCurrentState() === "analysis" && store.mode === "normal"
+
+  const openFiSettings = () => {
+    dialog.show(() => (
+      <VSCodeFiSettings
+        enabled={fiEnabled()}
+        disabled={store.mode !== "normal" || working()}
+        onEnabledChange={toggleFiAnalysisImplementation}
+      />
+    ))
+  }
+
+  const fiPluginToolbar = () => (
+    <Show when={props.variant !== "new-session"}>
+      <div class="flex min-h-8 min-w-0 items-center gap-2 px-2 py-1 text-[13px] font-[440] leading-5 text-v2-text-text-faint">
+        <button
+          type="button"
+          class="flex size-7 shrink-0 items-center justify-center rounded text-v2-icon-icon-muted transition-colors hover:bg-v2-overlay-simple-overlay-hover focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          disabled={store.mode !== "normal" || working()}
+          onClick={openFiSettings}
+          aria-label="FI 配置"
+        >
+          <Icon name="sliders" size="small" />
+        </button>
+        <button
+          type="button"
+          class="flex h-7 min-w-0 items-center gap-1.5 rounded px-2 text-[13px] font-[440] leading-5 transition-colors hover:bg-v2-overlay-simple-overlay-hover focus-visible:bg-v2-overlay-simple-overlay-hover focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+          classList={{
+            "bg-v2-overlay-simple-overlay-hover text-v2-text-text-base": fiEnabled(),
+            "text-v2-text-text-muted": !fiEnabled(),
+          }}
+          disabled={store.mode !== "normal" || working()}
+          onClick={() => toggleFiAnalysisImplementation(!fiEnabled())}
+        >
+          <span class="min-w-0 truncate">
+            分析-实施:{" "}
+            <span classList={{ "text-[var(--text-on-critical-base)]": fiCurrentState() === "analysis" }}>
+              {fiCurrentState() === "analysis" ? "分析" : "默认"}
+            </span>
+          </span>
+        </button>
+      </div>
+    </Show>
+  )
 
   const handleKeyDown = (event: KeyboardEvent) => {
     if ((event.metaKey || event.ctrlKey) && !event.altKey && !event.shiftKey && event.key.toLowerCase() === "u") {
@@ -1316,6 +1475,13 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
     }
 
     // Note: Shift+Enter is handled earlier, before IME check
+    if (ctrl && event.key === "Enter" && canSubmitWithFiDefault()) {
+      event.preventDefault()
+      if (event.repeat) return
+      submitWithFiDefault()
+      return
+    }
+
     if (event.key === "Enter" && !event.shiftKey) {
       event.preventDefault()
       if (event.repeat) return
@@ -1331,7 +1497,7 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
       ) {
         return
       }
-      void handleSubmit(event)
+      handlePromptSubmit(event)
     }
   }
 
@@ -1507,7 +1673,7 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
           <div class="flex flex-col gap-3">
             <DockShellForm
               data-component={newSession() ? "session-new-composer" : "session-composer"}
-              onSubmit={handleSubmit}
+              onSubmit={handlePromptSubmit}
               classList={{
                 "group/prompt-input min-h-[96px] w-full rounded-xl bg-v2-background-bg-base shadow-[var(--v2-elevation-raised)]": true,
                 "border-icon-info-active border-dashed": store.draggingType !== null,
@@ -1652,24 +1818,52 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
                     </div>
                   </Show>
                 </div>
-                <Tooltip placement="top" inactive={!working() && blank()} value={tip()}>
-                  <IconButton
-                    data-action="prompt-submit"
-                    type="submit"
-                    disabled={!working() && blank()}
-                    tabIndex={store.mode === "normal" ? undefined : -1}
-                    icon={stopping() ? "stop" : store.mode === "shell" ? "arrow-undo-down" : "arrow-up"}
-                    variant="primary"
-                    class="size-7 rounded-md p-[6px] text-v2-icon-icon-muted shadow-[var(--v2-elevation-button-contrast)] disabled:opacity-50"
-                    style={{
-                      "background-image":
-                        "linear-gradient(180deg,var(--v2-alpha-light-20) 0%,var(--v2-alpha-light-0) 100%),linear-gradient(90deg,var(--v2-background-bg-contrast) 0%,var(--v2-background-bg-contrast) 100%)",
-                    }}
-                    aria-label={stopping() ? language.t("prompt.action.stop") : language.t("prompt.action.send")}
-                  />
-                </Tooltip>
+                <Show
+                  when={canSubmitWithFiDefault()}
+                  fallback={
+                    <Tooltip placement="top" inactive={!working() && blank()} value={tip()}>
+                      <IconButton
+                        data-action="prompt-submit"
+                        type="submit"
+                        disabled={!working() && blank()}
+                        tabIndex={store.mode === "normal" ? undefined : -1}
+                        icon={stopping() ? "stop" : store.mode === "shell" ? "arrow-undo-down" : "arrow-up"}
+                        variant="primary"
+                        class="size-7 rounded-md p-[6px] text-v2-icon-icon-muted shadow-[var(--v2-elevation-button-contrast)] disabled:opacity-50"
+                        style={{
+                          "background-image":
+                            "linear-gradient(180deg,var(--v2-alpha-light-20) 0%,var(--v2-alpha-light-0) 100%),linear-gradient(90deg,var(--v2-background-bg-contrast) 0%,var(--v2-background-bg-contrast) 100%)",
+                        }}
+                        aria-label={stopping() ? language.t("prompt.action.stop") : language.t("prompt.action.send")}
+                      />
+                    </Tooltip>
+                  }
+                >
+                  <div class="flex h-8 w-7 flex-col overflow-hidden rounded-md shadow-[var(--v2-elevation-button-contrast)]">
+                    <button
+                      data-action="prompt-submit"
+                      type="submit"
+                      disabled={!working() && blank()}
+                      tabIndex={store.mode === "normal" ? undefined : -1}
+                      class="flex min-h-0 flex-1 items-center justify-center bg-v2-background-bg-contrast text-v2-icon-icon-muted disabled:opacity-50"
+                      aria-label={stopping() ? language.t("prompt.action.stop") : language.t("prompt.action.send")}
+                    >
+                      <Icon name={stopping() ? "stop" : "arrow-up"} size="small" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={blank() || working()}
+                      class="flex min-h-0 flex-1 items-center justify-center border-t border-v2-border-border-muted bg-v2-background-bg-contrast text-v2-icon-icon-muted disabled:opacity-50"
+                      onClick={submitWithFiDefault}
+                      aria-label="默认实施发送"
+                    >
+                      <Icon name="arrow-undo-down" size="small" />
+                    </button>
+                  </div>
+                </Show>
               </div>
             </DockShellForm>
+            {fiPluginToolbar()}
             <Show when={newSession() && selectedProject()}>
               <div class="flex h-7 min-w-0 items-center gap-0 px-2">
                 <ComposerPicker state={projectPickerState()} />
@@ -1679,7 +1873,7 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
         </Match>
         <Match when>
           <DockShellForm
-            onSubmit={handleSubmit}
+            onSubmit={handlePromptSubmit}
             classList={{
               "group/prompt-input": true,
               "focus-within:shadow-xs-border": true,
@@ -1795,18 +1989,45 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
                 />
 
                 <div class="flex items-center gap-1 pointer-events-auto">
-                  <Tooltip placement="top" inactive={!working() && blank()} value={tip()}>
-                    <IconButton
-                      data-action="prompt-submit"
-                      type="submit"
-                      disabled={!working() && blank()}
-                      tabIndex={store.mode === "normal" ? undefined : -1}
-                      icon={stopping() ? "stop" : store.mode === "shell" ? "arrow-undo-down" : "arrow-up"}
-                      variant="primary"
-                      class="size-8"
-                      aria-label={stopping() ? language.t("prompt.action.stop") : language.t("prompt.action.send")}
-                    />
-                  </Tooltip>
+                  <Show
+                    when={canSubmitWithFiDefault()}
+                    fallback={
+                      <Tooltip placement="top" inactive={!working() && blank()} value={tip()}>
+                        <IconButton
+                          data-action="prompt-submit"
+                          type="submit"
+                          disabled={!working() && blank()}
+                          tabIndex={store.mode === "normal" ? undefined : -1}
+                          icon={stopping() ? "stop" : store.mode === "shell" ? "arrow-undo-down" : "arrow-up"}
+                          variant="primary"
+                          class="size-8"
+                          aria-label={stopping() ? language.t("prompt.action.stop") : language.t("prompt.action.send")}
+                        />
+                      </Tooltip>
+                    }
+                  >
+                    <div class="flex size-8 flex-col overflow-hidden rounded-md">
+                      <button
+                        data-action="prompt-submit"
+                        type="submit"
+                        disabled={!working() && blank()}
+                        tabIndex={store.mode === "normal" ? undefined : -1}
+                        class="flex min-h-0 flex-1 items-center justify-center bg-[var(--icon-strong-base)] text-[var(--icon-invert-base)] hover:bg-[var(--icon-strong-hover)] disabled:bg-[var(--icon-strong-disabled)] disabled:opacity-50"
+                        aria-label={stopping() ? language.t("prompt.action.stop") : language.t("prompt.action.send")}
+                      >
+                        <Icon name={stopping() ? "stop" : "arrow-up"} size="small" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={blank() || working()}
+                        class="flex min-h-0 flex-1 items-center justify-center border-t bg-[var(--icon-strong-base)] text-[var(--icon-invert-base)] [border-top-color:var(--border-weak-base)] hover:bg-[var(--icon-strong-hover)] disabled:bg-[var(--icon-strong-disabled)] disabled:opacity-50"
+                        onClick={submitWithFiDefault}
+                        aria-label="默认实施发送"
+                      >
+                        <Icon name="arrow-undo-down" size="small" />
+                      </button>
+                    </div>
+                  </Show>
                 </div>
               </div>
 
@@ -2006,6 +2227,7 @@ export const VSCodePromptInput: Component<PromptInputProps> = (props) => {
               </div>
             </DockTray>
           </Show>
+          {fiPluginToolbar()}
         </Match>
       </Switch>
     </div>
@@ -2234,4 +2456,3 @@ function ComposerModelControl(props: { state: ComposerModelControlState }) {
     </Show>
   )
 }
-
