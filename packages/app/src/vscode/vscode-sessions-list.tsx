@@ -11,6 +11,9 @@ import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { sortedRootSessions } from "@/pages/layout/helpers"
 import { openVSCodeNewSession, openVSCodeSession } from "@/vscode/vscode-patch"
+import { Button } from "@opencode-ai/ui/button"
+import { Dialog } from "@opencode-ai/ui/dialog"
+import { useDialog } from "@opencode-ai/ui/context/dialog"
 
 const SESSION_LIMIT = 100
 export function VSCodeSessionsListPage(props: { directory: string }) {
@@ -28,6 +31,7 @@ export function VSCodeSessionsListPage(props: { directory: string }) {
   const [query, setQuery] = createSignal("")
   const [store, setStore] = serverSync.child(props.directory, { bootstrap: false })
   const newSessionKey = `${props.directory}:new`
+  const dialog = useDialog()
   let openingTimer: ReturnType<typeof setTimeout> | undefined
 
   const sessions = createMemo(() => sortedRootSessions(store, Date.now()))
@@ -120,8 +124,7 @@ export function VSCodeSessionsListPage(props: { directory: string }) {
       })
   }
 
-  const deleteSession = async (sessionID: string, title: string) => {
-    if (!window.confirm(language.t("session.delete.confirm", { name: title }))) return
+  const deleteSession = async (sessionID: string) => {
     setDeletingId(sessionID)
     setStore(
       "session",
@@ -134,6 +137,19 @@ export function VSCodeSessionsListPage(props: { directory: string }) {
       .delete({ sessionID })
       .catch(() => void serverSync.project.loadSessions(props.directory, { limit: SESSION_LIMIT }))
       .finally(() => setDeletingId(null))
+  }
+
+  const handleDeleteClick = (sessionID: string, title: string) => {
+    dialog.show(() => (
+      <DeleteSessionDialog
+        sessionID={sessionID}
+        title={title}
+        directory={props.directory}
+        serverSDK={serverSDK}
+        serverSync={serverSync}
+        onDelete={(id) => deleteSession(id)}
+      />
+    ))
   }
 
   return (
@@ -213,7 +229,7 @@ export function VSCodeSessionsListPage(props: { directory: string }) {
                       onDraftTitle={setEditingTitle}
                       onCancelEdit={() => setEditingId((cur) => (cur === session.id ? null : cur))}
                       onSaveTitle={() => saveSessionTitle(session.id)}
-                      onDelete={() => deleteSession(session.id, session.title || language.t("command.session.new"))}
+                      onDelete={() => handleDeleteClick(session.id, session.title || language.t("command.session.new"))}
                     />
                   )}
                 </For>
@@ -385,5 +401,42 @@ function SessionsEmpty(props: { language?: ReturnType<typeof useLanguage>; label
         </span>
       </Show>
     </div>
+  )
+}
+
+function DeleteSessionDialog(props: {
+  sessionID: string
+  title: string
+  directory: string
+  serverSDK: ReturnType<typeof useServerSDK>
+  serverSync: ReturnType<typeof useServerSync>
+  onDelete: (sessionID: string) => void
+}) {
+  const dialog = useDialog()
+  const language = useLanguage()
+  const [deleting, setDeleting] = createSignal(false)
+
+  const handleDelete = async () => {
+    setDeleting(true)
+    props.onDelete(props.sessionID)
+    dialog.close()
+  }
+
+  return (
+    <Dialog title={language.t("session.delete.title")} fit>
+      <div class="flex flex-col gap-4 pl-6 pr-2.5 pb-3">
+        <span class="text-14-regular text-text-strong">
+          {language.t("session.delete.confirm", { name: props.title })}
+        </span>
+        <div class="flex justify-end gap-2">
+          <Button variant="ghost" size="large" disabled={deleting()} onClick={() => dialog.close()}>
+            {language.t("common.cancel")}
+          </Button>
+          <Button variant="primary" size="large" disabled={deleting()} onClick={handleDelete}>
+            {language.t("session.delete.button")}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
   )
 }
