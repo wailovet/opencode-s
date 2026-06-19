@@ -50,6 +50,7 @@ export const VSCodeMcpSettingsPage: Component = () => {
   const serverSdk = useServerSDK()
   const [dialogOpen, setDialogOpen] = createSignal(false)
   const [mode, setMode] = createSignal<"add" | "edit">("add")
+  const [deleteName, setDeleteName] = createSignal<string>()
   const [form, setForm] = createStore({
     name: "",
     type: "local" as McpEntry["type"],
@@ -131,6 +132,15 @@ export const VSCodeMcpSettingsPage: Component = () => {
     })
   }
 
+  const removeMcp = async () => {
+    const name = deleteName()
+    if (!name) return
+    await updateMcp(
+      Object.fromEntries(Object.entries(serverSync.data.config.mcp ?? {}).filter(([key]) => key !== name)) as McpConfig,
+    )
+    setDeleteName(undefined)
+  }
+
   const toggleRuntime = async (name: string) => {
     const current = status()?.[name]?.status
     if (!current) return
@@ -183,6 +193,10 @@ export const VSCodeMcpSettingsPage: Component = () => {
           flex-wrap: wrap;
           justify-content: flex-end;
           gap: 8px;
+        }
+
+        .vscode-mcp-delete-button {
+          color: var(--v2-state-fg-danger);
         }
 
         .vscode-mcp-status {
@@ -412,6 +426,9 @@ export const VSCodeMcpSettingsPage: Component = () => {
                       <ButtonV2 variant="neutral" onClick={() => void toggleRuntime(name)}>
                         {runtimeActionLabel(status()?.[name]?.status)}
                       </ButtonV2>
+                      <ButtonV2 variant="neutral" class="vscode-mcp-delete-button" onClick={() => setDeleteName(name)}>
+                        删除
+                      </ButtonV2>
                     </div>
                   </SettingsRowV2>
                 )}
@@ -430,6 +447,21 @@ export const VSCodeMcpSettingsPage: Component = () => {
         onSave={() => void save()}
         onSaveJson={(input) => void saveJson(input)}
       />
+      <KobalteDialog open={!!deleteName()} onOpenChange={(open) => !open && setDeleteName(undefined)}>
+        <KobalteDialog.Portal>
+          <KobalteDialog.Overlay />
+          <Dialog title="删除 MCP 服务器" description={`将从 config.mcp 中删除 ${deleteName() ?? ""}。`} fit>
+            <DialogFooter>
+              <ButtonV2 variant="ghost-muted" onClick={() => setDeleteName(undefined)}>
+                取消
+              </ButtonV2>
+              <ButtonV2 variant="neutral" class="vscode-mcp-delete-button" onClick={() => void removeMcp()}>
+                删除
+              </ButtonV2>
+            </DialogFooter>
+          </Dialog>
+        </KobalteDialog.Portal>
+      </KobalteDialog>
     </div>
   )
 }
