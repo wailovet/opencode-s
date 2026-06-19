@@ -1,0 +1,88 @@
+.vscode-settings-wrapper {
+  width: 100vw;
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--v2-background-bg-base);
+}
+
+.vscode-settings-tabs {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  gap: 4px;
+  height: 44px;
+  padding: 0 14px;
+  border-bottom: 0.5px solid var(--v2-border-border-base);
+  background: var(--v2-background-bg-layer-01);
+}
+
+.vscode-settings-tab {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  padding: 0 10px;
+  border-radius: 4px;
+  color: var(--v2-text-text-muted);
+  font-size: 13px;
+  font-weight: 530;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.vscode-settings-tab:hover {
+  color: var(--v2-text-text-base);
+  background: var(--v2-background-bg-layer-02);
+}
+
+.vscode-settings-tab[data-active="true"] {
+  color: var(--v2-text-text-base);
+  background: var(--v2-background-bg-layer-02);
+}
+
+.vscode-settings-content {
+  min-height: 0;
+  flex: 1;
+  overflow: hidden;
+}
+
+.vscode-settings-native {
+  width: 100%;
+  height: 100%;
+}
+
+.vscode-settings-native > [data-component="dialog-v2"] {
+  position: static !important;
+  inset: auto !important;
+  z-index: auto !important;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  width: 100% !important;
+  height: 100% !important;
+  pointer-events: auto;
+}
+
+.vscode-settings-native > [data-component="dialog-v2"] > [data-slot="dialog-container"] {
+  width: 100% !important;
+  height: 100% !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+.vscode-settings-native > [data-component="dialog-v2"] > [data-slot="dialog-container"] > [data-slot="dialog-content"] {
+  width: 100% !important;
+  height: 100% !important;
+  max-height: none !important;
+  border-radius: 0 !important;
+}
+
+.vscode-settings-native
+  > [data-component="dialog-v2"]
+  > [data-slot="dialog-container"]
+  > [data-slot="dialog-content"]
+  > [data-slot="dialog-body"] {
+  width: 100% !important;
+  height: 100% !important;
+  max-height: none !important;
+}

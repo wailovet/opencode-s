@@ -1,5 +1,3 @@
-import { DialogSettings } from "@/components/settings-v2"
-import { Dialog as Kobalte } from "@kobalte/core/dialog"
 import { Route, StaticRouter, useLocation, useNavigate, useParams } from "@solidjs/router"
 import type { ParentProps } from "solid-js"
 import { createEffect, createMemo, onCleanup, onMount, Show } from "solid-js"
@@ -17,6 +15,7 @@ import { useSync } from "@/context/sync"
 import { base64Encode } from "@opencode-ai/core/util/encode"
 import { VSCodeHttpProxy } from "./vscode-http-proxy"
 import { VSCodeStorageBridge } from "./vscode-storage-bridge"
+import { VSCodeSettingsPage } from "./vscode-settings"
 
 console.log("[vscode-patch] init start")
 VSCodeHttpProxy.install()
@@ -233,61 +232,15 @@ export function PatchedRouteGate(props: ParentProps) {
   )
 }
 
-export function VSCodeSettingsPage() {
-  onMount(() => {
-    document.body.classList.add("vscode-settings-open")
-  })
-
-  return (
-    <div class="vscode-settings-wrapper">
-      <style>{`
-      .vscode-settings-wrapper {
-        width: 100vw;
-        height: 100dvh;
-      }
-
-      .vscode-settings-wrapper [data-component="dialog-v2"],
-      body.vscode-settings-open [data-component="dialog-v2"] {
-        display: flex;
-        align-items: stretch;
-        justify-content: stretch;
-        width: 100% !important;
-        height: 100% !important;
-        pointer-events: auto;
-      }
-
-      body.vscode-settings-open [data-slot="dialog-container"] {
-        width: 100% !important;
-        height: 100% !important;
-        border-radius: 0 !important;
-        box-shadow: none !important;
-      }
-
-      body.vscode-settings-open [data-slot="dialog-content"] {
-        width: 100% !important;
-        height: 100% !important;
-        max-height: none !important;
-        border-radius: 0 !important;
-      }
-
-      body.vscode-settings-open [data-slot="dialog-body"] {
-        width: 100% !important;
-        height: 100% !important;
-        max-height: none !important;
-      }
-    `}</style>
-      <Kobalte open modal onOpenChange={(open) => { if (!open) window.close() }}>
-        <DialogSettings />
-      </Kobalte>
-    </div>
-  )
-}
-
 
 export function PatchedRoutes() {
   return (
     <>
       <Route path="/settings" component={VSCodeSettingsPage} />
+      <Route path="/settings/permissions" component={VSCodeSettingsPage} />
+      <Route path="/settings/mcp" component={VSCodeSettingsPage} />
+      <Route path="/:dir/settings/permissions" component={VSCodeSettingsPage} />
+      <Route path="/:dir/settings/mcp" component={VSCodeSettingsPage} />
       <Route path="/:dir/settings" component={VSCodeSettingsPage} />
       <Route path="/:dir/vscode-sessions-list" component={VSCodeSessionsListProviders} />
       <Route path="/:dir/vscode-session/:id?" component={VSCodeSessionProviders} />
