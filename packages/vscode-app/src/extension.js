@@ -322,8 +322,12 @@ class OpenCodeAppViewProvider {
   }
 
   appPath(options = {}) {
-    if (options.settings) return "/settings"
     const encode = (dir) => Buffer.from(dir, "utf-8").toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+    if (options.settings) {
+      const dir = normalizeWorkspaceDir(workspaceDirFromVSCode())
+      if (dir) return "/" + encode(dir) + "/settings"
+      return "/settings"
+    }
     // 新建会话的聊天页（编辑器区 panel，无 session id）
     if (options.newSession) {
       const dir = options.sessionDir ?? normalizeWorkspaceDir(workspaceDirFromVSCode())

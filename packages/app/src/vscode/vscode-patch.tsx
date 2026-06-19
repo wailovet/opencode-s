@@ -203,10 +203,12 @@ function VSCodeSessionsListProviders(props: ParentProps) {
 export function PatchedRouteGate(props: ParentProps) {
   const location = useLocation()
   const component = () => {
-    if (location.pathname.includes("/settings")) return VSCodeSettingsPage
+    // 只拦截精确的 /settings（无目录前缀），直接渲染 VSCodeSettingsPage，绕过 <Layout>
+    // /:dir/settings 则走 vscodePath → StaticRouter 路径，让 Route 系统正确解析 :dir 参数
+    if (location.pathname === "/settings" || location.pathname.startsWith("/settings?")) return VSCodeSettingsPage
   }
   const vscodePath = () => {
-    if (!location.pathname.includes("/vscode-sessions-list") && !location.pathname.includes("/vscode-session")) return
+    if (!location.pathname.includes("/vscode-sessions-list") && !location.pathname.includes("/vscode-session") && !location.pathname.includes("/settings")) return
     return `${location.pathname}${location.search}${location.hash}`
   }
 
@@ -286,6 +288,7 @@ export function PatchedRoutes() {
   return (
     <>
       <Route path="/settings" component={VSCodeSettingsPage} />
+      <Route path="/:dir/settings" component={VSCodeSettingsPage} />
       <Route path="/:dir/vscode-sessions-list" component={VSCodeSessionsListProviders} />
       <Route path="/:dir/vscode-session/:id?" component={VSCodeSessionProviders} />
     </>
