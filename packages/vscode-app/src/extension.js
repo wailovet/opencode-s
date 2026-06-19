@@ -914,7 +914,10 @@ function launchManualModeBackend(context, config, backendPort) {
     throw new Error("cmd.exe launch is only supported on Windows")
   }
   const cwd = resolveWorkspaceDir(context.extensionPath)
-  const command = `start "" /D "${cwd}" cmd.exe /d /k "${manualModeCommand(context, config, backendPort)}"`
+  // /c (not /k): cmd exits together with the opencode backend it launched. A residual /k window
+  // would keep a handle on staging\runtime\bin\opencode.exe and lock the staging directory, breaking
+  // rebuilds. /c ensures the window closes as soon as the backend stops.
+  const command = `start "" /D "${cwd}" cmd.exe /d /c "${manualModeCommand(context, config, backendPort)}"`
   const child = childProcess.spawn(
     "cmd.exe",
     ["/d", "/c", command],
