@@ -14,6 +14,7 @@ import { useServerSDK } from "@/context/server-sdk"
 import { useServerSync } from "@/context/server-sync"
 import { SettingsListV2 } from "@/components/settings-v2/parts/list"
 import { SettingsRowV2 } from "@/components/settings-v2/parts/row"
+import { VSCodeHttpProxy } from "./vscode-http-proxy"
 import "@/components/settings-v2/settings-v2.css"
 
 type McpConfig = NonNullable<Config["mcp"]>
@@ -132,13 +133,24 @@ export const VSCodeMcpSettingsPage: Component = () => {
     })
   }
 
+  // 删除 MCP：完整三步（断开+禁用 → 删配置文件 → 尝试 update 同步）由扩展进程执行。
+  // 前端只发一个 mcpRemove 消息，等结果后乐观更新 + 刷新状态。
   const removeMcp = async () => {
     const name = deleteName()
     if (!name) return
-    await updateMcp(
-      Object.fromEntries(Object.entries(serverSync.data.config.mcp ?? {}).filter(([key]) => key !== name)) as McpConfig,
-    )
     setDeleteName(undefined)
+
+    const before = serverSync.data.config.mcp
+    const next = Object.fromEntries(Object.entries(before ?? {}).filter(([key]) => key !== name)) as McpConfig
+    serverSync.set("config", "mcp", next)
+
+    try {
+      await requestMcpRemove(name)
+    } catch (err: unknown) {
+      serverSync.set("config", "mcp", before)
+      showToast({ title: "MCP 删除失败", description: err instanceof Error ? err.message : String(err) })
+    }
+    await refetch()
   }
 
   const toggleRuntime = async (name: string) => {
@@ -1015,4 +1027,33 @@ function runtimeActionLabel(status: McpStatus["status"] | undefined) {
   if (status === "connected") return "断开"
   if (status === "needs_auth") return "认证"
   return "连接"
+}
+
+// 请求扩展进程执行 MCP 完整删除（断开+禁用 → 删配置文件 → 同步状态）。
+// 后端 config.update 深合并删不掉，只能由扩展进程直写文件并协调后端 API。
+function requestMcpRemove(name: string) {
+  return new Promise<void>((resolve, reject) => {
+    const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`
+    const timeout = window.setTimeout(() => {
+      window.removeEventListener("message", onMessage)
+      reject(new Error("MCP 删除请求超时"))
+    }, 30_000)
+
+    const onMessage = (event: MessageEvent) => {
+      if (!VSCodeHttpProxy.isBridgeMessage(event)) return
+      const data = event.data as Record<string, unknown> | undefined
+      if (!data || data.source !== "opencode-vscode-app") return
+      if (data.command !== "mcpRemoveResult" || data.requestId !== requestId) return
+      window.clearTimeout(timeout)
+      window.removeEventListener("message", onMessage)
+      if (data.error) {
+        reject(new Error(String(data.error)))
+        return
+      }
+      resolve()
+    }
+
+    window.addEventListener("message", onMessage)
+    VSCodeHttpProxy.postMessage({ source: "opencode-vscode-app", command: "mcpRemove", name, requestId })
+  })
 }

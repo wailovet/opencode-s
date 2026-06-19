@@ -202,6 +202,11 @@ class OpenCodeAppViewProvider {
     if (message.command === "fiConfigUpdate") {
       await this.handleFiConfigUpdate(message, webview)
     }
+    // MCP 删除：opencode 后端 config.update 是深合并语义，缺 key 会被补回，无法通过 HTTP
+    // 删除 mcp.<name>。由扩展进程执行完整三步：断开+禁用 → 删配置文件 → 尝试 update 同步。
+    if (message.command === "mcpRemove") {
+      await this.handleMcpRemove(message, webview)
+    }
     if (message.command === "proxyFetch") {
       await this.proxy.proxyFetch(message, webview)
     }
@@ -248,6 +253,49 @@ class OpenCodeAppViewProvider {
     } catch (error) {
       await postFiConfigResult(webview, message.requestId, undefined, error)
     }
+  }
+
+  // 删除 MCP 的完整流程（后端 config.update 深合并删不掉，必须直写文件）：
+  //   1. 断开运行时连接 + 禁用，让后端先释放该 MCP 资源
+  //   2. 直写全局配置文件删除 mcp.<name>
+  //   3. 尝试 PATCH /global/config 让后端/前端状态同步（合并语义可能补不回，但触发刷新）
+  async handleMcpRemove(message, webview) {
+    const name = typeof message.name === "string" ? message.name : ""
+    try {
+      if (!name) throw new Error("MCP 名称不能为空")
+      const baseUrl = await this.backendBaseUrl()
+
+      // 1. 断开连接（仅在 connected 时）。
+      const statusRes = await opencodeJson(baseUrl, "GET", "/mcp")
+      const status = (statusRes && statusRes[name] && statusRes[name].status) || undefined
+      if (status === "connected") {
+        await opencodeJson(baseUrl, "POST", `/mcp/${encodeURIComponent(name)}/disconnect`)
+      }
+
+      // 2. 直写配置文件删除 mcp.<name>。
+      const file = globalOpencodeConfigFile()
+      const before = fs.existsSync(file) ? await fs.promises.readFile(file, "utf8") : ""
+      const next = removeMcpEntry(before, name)
+      if (next !== before) {
+        await fs.promises.mkdir(path.dirname(file), { recursive: true })
+        await fs.promises.writeFile(file, next, "utf8")
+      }
+
+      // 3. 尝试 update 同步状态（用删除后的 mcp 对象；后端会以磁盘为准重读）。
+      const mcpAfter = next.trim() ? readMcpAfterRemove(next) : {}
+      await opencodeJson(baseUrl, "PATCH", "/global/config", { config: { mcp: mcpAfter } })
+
+      await postMcpRemoveResult(webview, message.requestId, name)
+    } catch (error) {
+      await postMcpRemoveResult(webview, message.requestId, undefined, error)
+    }
+  }
+
+  // 后端基地址：优先用已启动实例的端口，回退到配置里的 backendPort。
+  async backendBaseUrl() {
+    const port = this.backendPort || normalizePort(vscode.workspace.getConfiguration("opencodeVscodeApp").get("backendPort", 0))
+    if (!port) throw new Error("opencode 后端端口未知，请先启动后端")
+    return `http://127.0.0.1:${port}`
   }
 
   async startManualModeBackend() {
@@ -863,6 +911,103 @@ async function postFiConfigResult(webview, requestId, config, error) {
     config: config ?? {},
     error: error ? error instanceof Error ? error.message : String(error) : undefined,
   })
+}
+
+// 复刻 opencode 的 Global.Path.config 解析（packages/core/src/global.ts）：
+// OPENCODE_CONFIG_DIR 优先，否则 XDG_CONFIG_HOME/opencode，再否则 ~/.config/opencode。
+function opencodeConfigDir() {
+  if (process.env.OPENCODE_CONFIG_DIR) return process.env.OPENCODE_CONFIG_DIR
+  const xdgConfig = process.env.XDG_CONFIG_HOME || path.join(os.homedir(), ".config")
+  return path.join(xdgConfig, "opencode")
+}
+
+// 复刻 opencode 的 globalConfigFile()（packages/opencode/src/config/config.ts）：
+// 优先返回已存在的配置文件，不存在时回退到 opencode.jsonc。
+function globalOpencodeConfigFile() {
+  const dir = opencodeConfigDir()
+  const candidates = ["opencode.jsonc", "opencode.json", "config.json"].map((file) => path.join(dir, file))
+  for (const file of candidates) {
+    if (fs.existsSync(file)) return file
+  }
+  return candidates[0]
+}
+
+// 删除 mcp.<name>。优先用 jsonc-parser 精确删除（保留注释与格式），
+// 无该依赖时回退到 stripJsonComments 全量重写（会丢失注释）。
+function removeMcpEntry(text, name) {
+  const trimmed = text.trim()
+  if (!trimmed) return text
+  let jsoncParser
+  try {
+    jsoncParser = require("jsonc-parser")
+  } catch {
+    jsoncParser = undefined
+  }
+
+  if (jsoncParser) {
+    const edits = jsoncParser.modify(text, ["mcp", name], undefined, {
+      formattingOptions: { insertSpaces: true, tabSize: 2 },
+    })
+    return jsoncParser.applyEdits(text, edits)
+  }
+
+  const parsed = JSON.parse(stripJsonComments(trimmed))
+  if (isRecord(parsed.mcp) && name in parsed.mcp) {
+    delete parsed.mcp[name]
+    if (Object.keys(parsed.mcp).length === 0) delete parsed.mcp
+  }
+  return `${JSON.stringify(parsed, null, 2)}\n`
+}
+
+async function postMcpRemoveResult(webview, requestId, name, error) {
+  await webview?.postMessage({
+    source: "opencode-vscode-app",
+    command: "mcpRemoveResult",
+    requestId,
+    name,
+    error: error ? error instanceof Error ? error.message : String(error) : undefined,
+  })
+}
+
+// 调用 opencode 后端 JSON 接口。method 支持 GET/POST/PATCH/DELETE；body 为对象时序列化为 JSON。
+// 非 2xx 抛错（含响应体片段）。超时 5 秒，避免删除流程卡死。
+function opencodeJson(baseUrl, method, pathname, body) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(pathname, baseUrl)
+    const payload = body === undefined ? null : JSON.stringify(body)
+    const request = http.request(url, {
+      method,
+      timeout: 5_000,
+      headers: payload === null ? {} : { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) },
+    }, (response) => {
+      let chunks = ""
+      response.setEncoding("utf8")
+      response.on("data", (chunk) => { chunks += chunk })
+      response.on("end", () => {
+        if (response.statusCode >= 200 && response.statusCode < 300) {
+          if (!chunks) return resolve(undefined)
+          try { resolve(JSON.parse(chunks)) } catch { resolve(undefined) }
+          return
+        }
+        reject(new Error(`${method} ${pathname} -> ${response.statusCode}: ${chunks.slice(0, 200)}`))
+      })
+    })
+    request.on("timeout", () => { request.destroy(); reject(new Error(`${method} ${pathname} 超时`)) })
+    request.on("error", reject)
+    request.end(payload)
+  })
+}
+
+// 从删除后的配置文件文本中读出剩余的 mcp 对象，供 PATCH /global/config 同步。
+function readMcpAfterRemove(text) {
+  const trimmed = text.trim()
+  if (!trimmed) return {}
+  try {
+    const parsed = JSON.parse(stripJsonComments(trimmed))
+    return isRecord(parsed.mcp) ? parsed.mcp : {}
+  } catch {
+    return {}
+  }
 }
 
 function clearViteCache(buildDir) {

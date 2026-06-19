@@ -132,16 +132,28 @@ const PermissionSelect: Component<{
   )
 }
 
+// 后端把字符串 action normalize 成 { "*": action } 存入配置，所以要同时识别字符串形式
+// （"deny"）和通配符对象形式（{ "*": "deny" }），否则会被判成 "custom"。
 function globalAction(permission: PermissionConfig | undefined) {
-  return actionFromRule(permission as PermissionRuleConfig | undefined) ?? "custom"
+  const action = actionFromRule(permission as PermissionRuleConfig | undefined)
+  if (action) return action
+  if (isPermissionObject(permission)) {
+    const wildcard = actionFromRule(permission["*"] as PermissionRuleConfig | undefined)
+    if (wildcard) return wildcard
+  }
+  return "custom"
 }
 
 function toolAction(permission: PermissionConfig | undefined, key: ToolKey) {
   const action = actionFromRule(permission as PermissionRuleConfig | undefined)
   if (action) return action
   if (!isPermissionObject(permission)) return "ask"
+  // 具体工具规则优先；缺失时回退到 "*" 通配符，符合 opencode 权限优先级。
   const rule = permission[key]
-  return actionFromRule(rule) ?? (rule ? "custom" : "ask")
+  const toolActionValue = actionFromRule(rule as PermissionRuleConfig | undefined)
+  if (toolActionValue) return toolActionValue
+  if (rule) return "custom"
+  return actionFromRule(permission["*"] as PermissionRuleConfig | undefined) ?? "ask"
 }
 
 function permissionWithTool(permission: PermissionConfig | undefined, key: ToolKey, action: PermissionActionConfig) {
