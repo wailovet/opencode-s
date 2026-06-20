@@ -47,7 +47,7 @@ if not exist "%OUT_DIR%" mkdir "%OUT_DIR%"
 if errorlevel 1 exit /b 1
 
 echo [0/4] Cleaning previous build artifacts...
-taskkill /f /im opencode.exe >nul 2>nul
+taskkill /f /im opencode.exe
 taskkill /f /im node.exe >nul 2>nul
 if exist "%STAGE_DIR%" (
   for /l %%i in (1,1,5) do (

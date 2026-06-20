@@ -207,6 +207,14 @@ class OpenCodeAppViewProvider {
     if (message.command === "mcpRemove") {
       await this.handleMcpRemove(message, webview)
     }
+    // 权限配置：本插件作为配置文件的 UI 编辑器，数据源就是 opencode.jsonc 的 permission 字段，
+    // 不经过后端 config.update（深合并会破坏删除/对象规则）。
+    if (message.command === "permissionGet") {
+      await this.handlePermissionGet(message, webview)
+    }
+    if (message.command === "permissionUpdate") {
+      await this.handlePermissionUpdate(message, webview)
+    }
     if (message.command === "proxyFetch") {
       await this.proxy.proxyFetch(message, webview)
     }
@@ -288,6 +296,34 @@ class OpenCodeAppViewProvider {
       await postMcpRemoveResult(webview, message.requestId, name)
     } catch (error) {
       await postMcpRemoveResult(webview, message.requestId, undefined, error)
+    }
+  }
+
+  // 读取 opencode.jsonc 的 permission 字段，回传给前端用于显示（数据源是文件本身）。
+  async handlePermissionGet(message, webview) {
+    try {
+      const file = globalOpencodeConfigFile()
+      const text = fs.existsSync(file) ? await fs.promises.readFile(file, "utf8") : ""
+      await postPermissionResult(webview, message.requestId, readPermissionField(text))
+    } catch (error) {
+      await postPermissionResult(webview, message.requestId, undefined, error)
+    }
+  }
+
+  // 整体替换 opencode.jsonc 的 permission 字段（不是合并），绕开后端 config.update 深合并。
+  // permission 为 undefined 时删除整个 permission 字段。写盘后回传新 permission，供前端更新本地 state。
+  async handlePermissionUpdate(message, webview) {
+    try {
+      const file = globalOpencodeConfigFile()
+      const before = fs.existsSync(file) ? await fs.promises.readFile(file, "utf8") : ""
+      const next = writePermissionField(before, message.permission)
+      if (next !== before) {
+        await fs.promises.mkdir(path.dirname(file), { recursive: true })
+        await fs.promises.writeFile(file, next, "utf8")
+      }
+      await postPermissionResult(webview, message.requestId, readPermissionField(next))
+    } catch (error) {
+      await postPermissionResult(webview, message.requestId, undefined, error)
     }
   }
 
@@ -965,6 +1001,55 @@ async function postMcpRemoveResult(webview, requestId, name, error) {
     command: "mcpRemoveResult",
     requestId,
     name,
+    error: error ? error instanceof Error ? error.message : String(error) : undefined,
+  })
+}
+
+// 读取 opencode 配置文本里的 permission 字段（可能为 undefined）。
+function readPermissionField(text) {
+  const trimmed = text.trim()
+  if (!trimmed) return undefined
+  try {
+    return JSON.parse(stripJsonComments(trimmed)).permission
+  } catch {
+    return undefined
+  }
+}
+
+// 整体替换 opencode 配置里的 permission 字段。permission 为 undefined 时删除该字段。
+// 优先用 jsonc-parser 精确修改（保留注释与格式），无依赖时回退到全量重写。
+function writePermissionField(text, permission) {
+  const trimmed = text.trim()
+  const base = trimmed || "{}"
+  let jsoncParser
+  try {
+    jsoncParser = require("jsonc-parser")
+  } catch {
+    jsoncParser = undefined
+  }
+
+  if (jsoncParser) {
+    const edits = jsoncParser.modify(base, ["permission"], permission, {
+      formattingOptions: { insertSpaces: true, tabSize: 2 },
+    })
+    return jsoncParser.applyEdits(base, edits)
+  }
+
+  const parsed = JSON.parse(stripJsonComments(base))
+  if (permission === undefined) {
+    delete parsed.permission
+  } else {
+    parsed.permission = permission
+  }
+  return `${JSON.stringify(parsed, null, 2)}\n`
+}
+
+async function postPermissionResult(webview, requestId, permission, error) {
+  await webview?.postMessage({
+    source: "opencode-vscode-app",
+    command: "permissionResult",
+    requestId,
+    permission,
     error: error ? error instanceof Error ? error.message : String(error) : undefined,
   })
 }
