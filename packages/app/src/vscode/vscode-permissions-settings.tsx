@@ -145,6 +145,39 @@ export const VSCodePermissionsSettingsPage: Component = () => {
           gap: 8px;
         }
 
+        .vscode-permissions-tool-row {
+          display: flex;
+          flex-direction: column;
+        }
+
+        .vscode-permissions-rules-panel {
+          margin: 4px 0 16px;
+          padding: 8px 0 8px 16px;
+          display: flex;
+          flex-direction: column;
+          gap: 6px;
+        }
+
+        .vscode-permissions-rules-panel-row {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          font-size: 12px;
+        }
+
+        .vscode-permissions-rules-panel-pattern {
+          flex: 1;
+          min-width: 0;
+          font-family: var(--v2-font-mono, ui-monospace, monospace);
+          color: var(--v2-text-text-base);
+          word-break: break-all;
+        }
+
+        .vscode-permissions-rules-panel-action {
+          flex-shrink: 0;
+          color: var(--v2-text-text-muted);
+        }
+
         [data-component="dialog-v2"].vscode-permissions-rules-dialog [data-slot="dialog-container"] {
           width: min(640px, calc(100vw - 32px));
           height: auto;
@@ -267,29 +300,47 @@ export const VSCodePermissionsSettingsPage: Component = () => {
           <h3 class="settings-v2-section-title">工具调用</h3>
           <SettingsListV2>
             <For each={TOOL_ROWS}>
-              {(item) => (
-                <SettingsRowV2 title={item.title} description={item.description}>
-                  <div class="vscode-permissions-actions">
-                    <SelectV2
-                      appearance="inline"
-                      options={TOOL_SELECT_OPTIONS}
-                      current={TOOL_SELECT_OPTIONS.find((o) => o.value === toolAction(currentPermission(), item.key)) ?? CUSTOM_OPTION}
-                      value={(option) => option.value}
-                      label={(option) => option.label}
-                      disabled={readOnly()}
-                      onSelect={(option) => {
-                        if (!option || readOnly()) return
-                        void setToolAction(item.key, option.value)
-                      }}
-                    />
-                    <Show when={item.supportsRules && !readOnly()}>
-                      <ButtonV2 variant="ghost-muted" onClick={() => setRulesEditKey(item.key)}>
-                        规则
-                      </ButtonV2>
+              {(item) => {
+                const currentRules = createMemo(() => toolRules(currentPermission(), item.key))
+                const isCustom = () => toolAction(currentPermission(), item.key) === "custom"
+                return (
+                  <div class="vscode-permissions-tool-row">
+                    <SettingsRowV2 title={item.title} description={item.description}>
+                      <div class="vscode-permissions-actions">
+                        <SelectV2
+                          appearance="inline"
+                          options={TOOL_SELECT_OPTIONS}
+                          current={TOOL_SELECT_OPTIONS.find((o) => o.value === toolAction(currentPermission(), item.key)) ?? CUSTOM_OPTION}
+                          value={(option) => option.value}
+                          label={(option) => option.label}
+                          disabled={readOnly()}
+                          onSelect={(option) => {
+                            if (!option || readOnly()) return
+                            void setToolAction(item.key, option.value)
+                          }}
+                        />
+                        <Show when={item.supportsRules && !readOnly()}>
+                          <ButtonV2 variant="ghost-muted" onClick={() => setRulesEditKey(item.key)}>
+                            规则
+                          </ButtonV2>
+                        </Show>
+                      </div>
+                    </SettingsRowV2>
+                    <Show when={isCustom() && currentRules()}>
+                      <div class="vscode-permissions-rules-panel">
+                        <For each={Object.entries(currentRules()!)}>
+                          {([pattern, action]) => (
+                            <div class="vscode-permissions-rules-panel-row">
+                              <code class="vscode-permissions-rules-panel-pattern">{pattern}</code>
+                              <span class="vscode-permissions-rules-panel-action">{actionLabel(action)}</span>
+                            </div>
+                          )}
+                        </For>
+                      </div>
                     </Show>
                   </div>
-                </SettingsRowV2>
-              )}
+                )
+              }}
             </For>
           </SettingsListV2>
         </div>
@@ -451,6 +502,13 @@ function permissionObject(permission: PermissionConfig | undefined): Record<stri
 
 function actionFromRule(rule: PermissionRuleConfig | undefined): PermissionActionConfig | undefined {
   if (rule === "ask" || rule === "allow" || rule === "deny") return rule
+}
+
+// 面板里 action 的中文标签（与 select 选项一致）。
+function actionLabel(action: PermissionActionConfig): string {
+  if (action === "ask") return "询问"
+  if (action === "allow") return "允许"
+  return "拒绝"
 }
 
 function isPermissionObject(value: unknown): value is Record<string, unknown> {
